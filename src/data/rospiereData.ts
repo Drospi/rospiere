@@ -2,6 +2,45 @@ import { Book, Quiz, ChatMessage, UserStats, Medal, CuratedList } from '@/types/
 
 export const INITIAL_BOOKS: Book[] = [
   {
+    id: 'odisea-homero',
+    title: 'La Odisea',
+    author: 'Homero',
+    coverImage: 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80',
+    badge: 'EPUB',
+    category: 'Novedades',
+    edition: 'Edición Crítica Bilingüe Jónica',
+    accolade: 'Canon Universal',
+    rating: 4.9,
+    remainingTime: '14h 20m',
+    pagesTotal: 440,
+    currentPage: 42,
+    isBookmarked: true,
+    status: 'reading',
+    isEpub: true,
+    totalChapters: 24,
+    currentChapterIndex: 0,
+    sourceType: 'bundle',
+    synopsis: 'La epopeya fundacional de la literatura occidental: el accidentado y legendario periplo de diez años del rey de Ítaca, Odiseo, para regresar con su esposa Penélope y su hijo Telémaco tras la caída de Troya.',
+    sampleChapter: {
+      chapterNumber: 'Canto I',
+      part: 'Telemaquia',
+      title: 'Concilio de los Dioses e Invocación a la Musa',
+      quote: '«Háblame, Musa, de aquel varón de multiforme ingenio que, después de destruir Troya, anduvo peregrinando larguísimo tiempo.»',
+      content: [
+        'Háblame, Musa, de aquel varón de multiforme ingenio que, después de destruir la sacra ciudad de Troya, anduvo peregrinando larguísimo tiempo, vio las poblaciones y conoció las costumbres de muchos hombres...',
+        'Con el transcurso de los años llegó por fin la época en que los dioses habían decretado que volviese a su patria, a Ítaca, aunque no por eso debía poner fin a sus trabajos.',
+      ],
+    },
+    symbolismNote: {
+      concept: 'El Arquetipo del Nóstos y la Metis',
+      explanation: 'Odiseo encarna la metis (astucia e ingenio adaptable) frente a la fuerza destructiva, y el nóstos como consagración de la identidad humana y la memoria.',
+    },
+    reflectionQuestion: {
+      question: '¿Qué diferencia la astucia de Odiseo del heroísmo guerrero de la Ilíada?',
+      prompt: 'Examina cómo el engaño, la paciencia y el autocontrol sustituyen a la ira colérica como virtudes de supervivencia.',
+    },
+  },
+  {
     id: 'klara-y-el-sol',
     title: 'Klara y el Sol',
     author: 'Kazuo Ishiguro',

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,8 @@ import {
   LayoutAnimation,
   UIManager,
   Share,
+  TextInput,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -89,16 +91,14 @@ export default function EpubReaderScreen() {
     getCustomEpubData,
     updateEpubChapter,
     toggleEpubBookmark,
+    epubBookmarks,
+    addEpubBookmark,
+    removeEpubBookmark,
+    aiApiKey,
+    setAiApiKey,
+    aiProvider,
+    setAiProvider,
   } = useRospiere();
-
-  const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
-  const [quizModalVisible, setQuizModalVisible] = useState(false);
-  const [glossaryModalVisible, setGlossaryModalVisible] = useState(false);
-  const [selectedQuizAnswer, setSelectedQuizAnswer] = useState<number | null>(null);
-  const [quizFeedback, setQuizFeedback] = useState<string | null>(null);
-
-  // Active theme palette
-  const activePalette = THEME_PALETTES[epubSettings.theme] || THEME_PALETTES.paper;
 
   // Retrieve book data
   const bookMeta = useMemo(() => {
@@ -117,6 +117,55 @@ export default function EpubReaderScreen() {
       }
     );
   }, [importedEpubBooks, bookId]);
+
+  // Saved chapter index: restores where reader left off!
+  const initialChapterIndex = useMemo(() => {
+    if (params.chapter !== undefined) {
+      const parsed = parseInt(params.chapter, 10);
+      if (!isNaN(parsed) && parsed >= 0) return parsed;
+    }
+    if (typeof bookMeta.currentChapterIndex === 'number' && bookMeta.currentChapterIndex >= 0) {
+      return bookMeta.currentChapterIndex;
+    }
+    return 0;
+  }, [params.chapter, bookMeta.currentChapterIndex]);
+
+  const [currentChapterIndex, setCurrentChapterIndex] = useState(initialChapterIndex);
+  const scrollViewRef = useRef<any>(null);
+
+  // Sync reading progress whenever chapter changes
+  useEffect(() => {
+    updateEpubChapter(bookId, currentChapterIndex);
+  }, [bookId, currentChapterIndex, updateEpubChapter]);
+
+  // Selection & Action Bar States
+  const [selectedSnippet, setSelectedSnippet] = useState<string | null>(null);
+  const [selectionMenuVisible, setSelectionMenuVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // AI Consultation States
+  const [aiModalVisible, setAiModalVisible] = useState(false);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiResponse, setAiResponse] = useState<string | null>(null);
+  const [aiKeyModalVisible, setAiKeyModalVisible] = useState(false);
+  const [aiKeyInput, setAiKeyInput] = useState('');
+
+  // Bookmarks Modal State
+  const [bookmarksModalVisible, setBookmarksModalVisible] = useState(false);
+
+  // Dynamic Glossary States (Local or API IA)
+  const [glossaryModalVisible, setGlossaryModalVisible] = useState(false);
+  const [selectedGlossaryTerm, setSelectedGlossaryTerm] = useState<string | null>(null);
+  const [glossaryDefinition, setGlossaryDefinition] = useState<string | null>(null);
+  const [isGlossaryLoading, setIsGlossaryLoading] = useState(false);
+
+  // Active theme palette
+  const activePalette = THEME_PALETTES[epubSettings.theme] || THEME_PALETTES.paper;
+
+  // Book-specific bookmarks
+  const bookBookmarks = useMemo(() => {
+    return epubBookmarks.filter((bm) => bm.bookId === bookId);
+  }, [epubBookmarks, bookId]);
 
   // Retrieve chapters
   const bookChapters = useMemo(() => {
@@ -180,6 +229,8 @@ export default function EpubReaderScreen() {
       const nextIdx = currentChapterIndex + 1;
       setCurrentChapterIndex(nextIdx);
       updateEpubChapter(bookId, nextIdx);
+      // Ensure page scrolls immediately to top
+      scrollViewRef.current?.scrollTo({ y: 0, animated: false });
     }
   };
 
@@ -188,7 +239,237 @@ export default function EpubReaderScreen() {
       const prevIdx = currentChapterIndex - 1;
       setCurrentChapterIndex(prevIdx);
       updateEpubChapter(bookId, prevIdx);
+      // Ensure page scrolls immediately to top
+      scrollViewRef.current?.scrollTo({ y: 0, animated: false });
     }
+  };
+
+  const handleExitReader = () => {
+    updateEpubChapter(bookId, currentChapterIndex);
+    router.back();
+  };
+
+  const handleSelectParagraph = (text: string) => {
+    setSelectedSnippet(text.trim());
+    setSelectionMenuVisible(true);
+  };
+
+  const handleSaveHighlight = (text: string) => {
+    addEpubBookmark({
+      bookId,
+      chapterIndex: currentChapterIndex,
+      chapterTitle: currentChapter.title,
+      text: text.trim(),
+      color: '#E0D0B8',
+    });
+    setToastMessage('Marcador guardado en tus notas');
+    setTimeout(() => setToastMessage(null), 2500);
+    setSelectionMenuVisible(false);
+  };
+
+  const handleOpenGlossaryForText = async (rawText: string) => {
+    const cleanTerm = rawText
+      .trim()
+      .replace(/^«+|»+|"+|'+|\[\d+\]|[.,;:?!]/g, '')
+      .trim()
+      .slice(0, 50);
+    const termToQuery = cleanTerm || rawText.slice(0, 40);
+    setSelectedGlossaryTerm(termToQuery);
+    setSelectionMenuVisible(false);
+    setIsGlossaryLoading(true);
+    setGlossaryDefinition(null);
+    setGlossaryModalVisible(true);
+
+    if (aiApiKey && aiApiKey.trim().length > 10) {
+      try {
+        if (aiProvider === 'openai') {
+          const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${aiApiKey.trim()}`,
+            },
+            body: JSON.stringify({
+              model: 'gpt-4o-mini',
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    'Eres el lexicógrafo y crítico literario de Rospiere Editions. Define el término en el contexto literario con etimología (si aplica), significado y matiz poético en un solo párrafo conciso y erudito.',
+                },
+                {
+                  role: 'user',
+                  content: `Obra: "${bookMeta.title}". Define el término literario: «${termToQuery}».`,
+                },
+              ],
+              max_tokens: 220,
+            }),
+          });
+          const json = await res.json();
+          if (json.choices && json.choices[0]?.message?.content) {
+            setGlossaryDefinition(json.choices[0].message.content);
+            setIsGlossaryLoading(false);
+            return;
+          }
+        } else {
+          // Gemini
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${aiApiKey.trim()}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `Como lexicógrafo de Rospiere Editions, define brevemente el término «${termToQuery}» en el contexto de "${bookMeta.title}". Incluye etimología relevante y su sentido literario en un párrafo elegante y conciso.`,
+                      },
+                    ],
+                  },
+                ],
+              }),
+            }
+          );
+          const json = await res.json();
+          if (json.candidates && json.candidates[0]?.content?.parts?.[0]?.text) {
+            setGlossaryDefinition(json.candidates[0].content.parts[0].text);
+            setIsGlossaryLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to local
+      }
+    }
+
+    // Local Rospiere Literary Glossary Agent
+    setTimeout(() => {
+      const lower = termToQuery.toLowerCase();
+      let def = '';
+      if (lower.includes('musa')) {
+        def = 'Musa (del gr. Μοῦσα): En la poesía clásica, deidad inspiradora de las artes y la memoria. En la épica homérica, la invocación inicial otorga legitimidad numinosa al canto del aedo.';
+      } else if (lower.includes('polítropos') || lower.includes('polytropos') || lower.includes('ingenio')) {
+        def = 'Polýtropos (πολύτροπος): Epíteto homérico de Odiseo: «de multiforme ingenio», «de muchos giros». Expresa tanto la pluralidad de caminos en su errancia como la agudeza moral y astucia («mêtis») para sortear la adversidad.';
+      } else if (lower.includes('nóstos') || lower.includes('nostos') || lower.includes('retorno')) {
+        def = 'Nóstos (νόστος): El viaje heroico de regreso al hogar patrio. Da origen al término «nostalgia» (el dolor por el anhelo del retorno) y constituye el eje de redención épica.';
+      } else if (lower.includes('xenía') || lower.includes('hospitalidad')) {
+        def = 'Xenía (ξενία): Ley sagrada de hospitalidad ritual entre huéspedes y anfitriones, amparada por Zeus Xenios. Su cumplimiento o vulneración determina el destino moral de los pueblos en la épica clásica.';
+      } else if (lower.includes('macondo')) {
+        def = 'Macondo: Territorio mítico fundado por José Arcadio Buendía. Más que un poblado físico, encarna la metáfora de la historia colombiana y latinoamericana donde conviven la magia, el aislamiento y la fatalidad cíclica.';
+      } else if (lower.includes('soledad')) {
+        def = 'Soledad: En la poética de García Márquez, condición ontológica de incomunicación afectiva que condena a los Buendía a repetir los mismos extravíos hasta su extinción definitiva.';
+      } else if (lower.includes('borrascosas') || lower.includes('cumbres')) {
+        def = 'Borrascosas (wuthering): Vocablo dialectal de Yorkshire que describe la conmoción atmosférica y ventiscas que azotan los páramos. Refleja las pasiones tempestuosas e indómitas de Heathcliff.';
+      } else if (lower.includes('metamorfosis') || lower.includes('samsa')) {
+        def = 'Metamorfosis: Transmutación física que exterioriza la alienación laboral y familiar de Gregor Samsa, convirtiendo su deshumanización social en una grotesca condición biológica.';
+      } else {
+        def = `Definición del Glosario Rospiere: «${termToQuery}». En el contexto de «${bookMeta.title}», este término o pasaje posee un rol estético y semántico destacado, enriqueciendo la tonalidad expresiva y el horizonte simbólico de la obra.`;
+      }
+      setGlossaryDefinition(def);
+      setIsGlossaryLoading(false);
+    }, 500);
+  };
+
+  const handleConsultAI = async (textToConsult: string) => {
+    setSelectionMenuVisible(false);
+    setIsAiLoading(true);
+    setAiResponse(null);
+    setAiModalVisible(true);
+
+    if (aiApiKey && aiApiKey.trim().length > 10) {
+      try {
+        if (aiProvider === 'openai') {
+          const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${aiApiKey.trim()}`,
+            },
+            body: JSON.stringify({
+              model: 'gpt-4o-mini',
+              messages: [
+                {
+                  role: 'system',
+                  content:
+                    'Eres el Asistente Socrático de Rospiere Editions. Analiza el pasaje con elegancia, profundidad simbólica y erudición literaria.',
+                },
+                {
+                  role: 'user',
+                  content: `Obra: ${bookMeta.title}. Pasaje: «${textToConsult}». Analiza el simbolismo, significado y resonancia en el contexto de la obra.`,
+                },
+              ],
+              max_tokens: 350,
+            }),
+          });
+          const json = await res.json();
+          if (json.choices && json.choices[0]?.message?.content) {
+            setAiResponse(json.choices[0].message.content);
+            setIsAiLoading(false);
+            return;
+          }
+        } else {
+          // Gemini API call
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${aiApiKey.trim()}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `Como crítico literario de Rospiere Editions, analiza este pasaje de "${bookMeta.title}":\n«${textToConsult}»\nExplica brevemente su simbolismo, metáfora y función en la narrativa en tono editorial erudito.`,
+                      },
+                    ],
+                  },
+                ],
+              }),
+            }
+          );
+          const json = await res.json();
+          if (json.candidates && json.candidates[0]?.content?.parts?.[0]?.text) {
+            setAiResponse(json.candidates[0].content.parts[0].text);
+            setIsAiLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // Fallback to built-in agent if network or API error
+      }
+    }
+
+    // Built-in Rospiere Socratic Agent (Local / Erudite analysis)
+    setTimeout(() => {
+      const lower = textToConsult.toLowerCase();
+      let analysis = '';
+
+      if (
+        lower.includes('musa') ||
+        lower.includes('odiseo') ||
+        lower.includes('troya') ||
+        lower.includes('telémaco') ||
+        lower.includes('poseidón') ||
+        lower.includes('polifemo')
+      ) {
+        analysis = `En la poética épica homérica, este pasaje articula la dualidad entre la «metis» (astucia adaptable) y la «moira» (destino inexorable). Odiseo encarna la inteligencia paciente frente a la fuerza destructiva; la invocación o conflicto subyacente sella la prueba moral del héroe antes de alcanzar su nóstos (retorno).`;
+      } else if (
+        lower.includes('soledad') ||
+        lower.includes('buendía') ||
+        lower.includes('macondo') ||
+        lower.includes('hielo')
+      ) {
+        analysis = `Este fragmento sintetiza la dimensión circular del tiempo en Macondo. La soledad opera como estigma ontológico de la estirpe Buendía: cada generación replica los espejismos de la anterior, incapaz de franquear el aislamiento afectivo antes del vendaval final.`;
+      } else if (lower.includes('sol') || lower.includes('klara') || lower.includes('josie')) {
+        analysis = `Ishiguro utiliza la luz solar como metáfora de la gracia providencial. En un orden hipertecnificado y mercantil, la mirada de un Amigo Artificial dota a la energía fotoeléctrica de una dimensión mística de compasión y sacrificio por la vida ajena.`;
+      } else {
+        analysis = `Análisis crítico Rospiere: El pasaje despliega una tensión deliberada entre la voz del narrador y el ambiente sensible del texto. Las elecciones léxicas enfatizan la resonancia interna de los personajes y anticipan el dilema moral que vertebra este capítulo.`;
+      }
+
+      setAiResponse(analysis);
+      setIsAiLoading(false);
+    }, 600);
   };
 
   const handleShare = async () => {
@@ -240,10 +521,56 @@ export default function EpubReaderScreen() {
     }
   }, [epubSettings.margin]);
 
-  // Drop cap letter and rest of paragraph
+  // Footnote and Drop Cap helpers
+  const renderInlineWithFootnotes = (text: string, baseStyle: any, footnoteStyle: any) => {
+    if (!text) return null;
+    const regex = /(\[\d+\]|\[[a-zA-Z]\])/g;
+    const segments = text.split(regex);
+
+    return segments.map((seg, idx) => {
+      if (/^\[(\d+|[a-zA-Z])\]$/.test(seg)) {
+        return (
+          <Text key={`fn-${idx}`} style={footnoteStyle}>
+            {seg}
+          </Text>
+        );
+      }
+      return (
+        <Text key={`txt-${idx}`} style={baseStyle}>
+          {seg}
+        </Text>
+      );
+    });
+  };
+
+  const parseDropCapParagraph = (text: string) => {
+    if (!text) return { prefix: '', dropCapLetter: '', rest: '' };
+    // Find the first actual alphabetic character (skipping [1], quotes, etc.)
+    const match = text.match(/[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ]/);
+    if (!match || match.index === undefined) {
+      return { prefix: '', dropCapLetter: '', rest: text };
+    }
+    const letterIdx = match.index;
+    const prefix = text.slice(0, letterIdx);
+    const dropCapLetter = text.charAt(letterIdx).toUpperCase();
+    const rest = text.slice(letterIdx + 1);
+    return { prefix, dropCapLetter, rest };
+  };
+
+  const isNotableQuotation = (text: string) => {
+    if (!text) return false;
+    const trimmed = text.trim();
+    const startsEndsGuillemet = trimmed.startsWith('«') && trimmed.endsWith('»');
+    const startsEndsDblQuote = trimmed.startsWith('"') && trimmed.endsWith('"');
+    if ((startsEndsGuillemet || startsEndsDblQuote) && trimmed.length >= 35) {
+      return true;
+    }
+    const matchGuillemet = trimmed.match(/«([^»]{40,})»/);
+    if (matchGuillemet) return true;
+    return false;
+  };
+
   const firstParagraph = currentChapter.paragraphs[0] || '';
-  const dropCapLetter = firstParagraph.length > 0 ? firstParagraph.charAt(0) : '';
-  const restOfFirstParagraph = firstParagraph.slice(1);
 
   return (
     <View style={[styles.screen, { backgroundColor: activePalette.bg }]}>
@@ -260,7 +587,7 @@ export default function EpubReaderScreen() {
           ]}>
           <View style={styles.headerInner}>
             <Pressable
-              onPress={() => router.back()}
+              onPress={handleExitReader}
               style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}
               hitSlop={12}
               accessibilityLabel="Volver a la biblioteca">
@@ -281,6 +608,14 @@ export default function EpubReaderScreen() {
             </View>
 
             <View style={styles.headerRightActions}>
+              <Pressable
+                onPress={() => setBookmarksModalVisible(true)}
+                style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}
+                hitSlop={8}
+                accessibilityLabel="Marcadores y citas guardadas">
+                <MaterialIcons name="bookmarks" size={18} color={activePalette.secondaryText} />
+              </Pressable>
+
               <Pressable
                 onPress={handleShare}
                 style={({ pressed }) => [styles.headerIconButton, pressed && styles.pressed]}
@@ -311,6 +646,7 @@ export default function EpubReaderScreen() {
 
       {/* Main Scroll Content */}
       <ScrollView
+        ref={scrollViewRef}
         style={styles.scrollView}
         contentContainerStyle={[
           styles.scrollContent,
@@ -964,136 +1300,187 @@ export default function EpubReaderScreen() {
           </View>
 
           {/* Primer Párrafo con Letra Capital (Drop Cap) */}
-          {firstParagraph.length > 0 && (
-            <View style={styles.dropCapContainer}>
-              <View
-                style={[
-                  styles.dropCapBox,
-                  { backgroundColor: activePalette.cardBg },
-                ]}>
+          {firstParagraph.length > 0 && (() => {
+            const { prefix, dropCapLetter, rest } = parseDropCapParagraph(firstParagraph);
+            const footnoteStyle = {
+              fontSize: Math.max(10, Math.round(epubSettings.fontSize * 0.58)),
+              lineHeight: Math.max(12, Math.round(epubSettings.fontSize * 0.7)),
+              fontWeight: '700' as const,
+              color: activePalette.secondaryText,
+            };
+            const baseTextStyle = {
+              fontFamily: resolvedFontFamily,
+              fontSize: epubSettings.fontSize,
+              lineHeight: resolvedLineHeight,
+              color: activePalette.text,
+            };
+
+            if (!dropCapLetter) {
+              return (
+                <Pressable
+                  onPress={() => handleSelectParagraph(firstParagraph)}
+                  style={styles.paragraphPressable}>
+                  <Text
+                    style={[
+                      styles.paragraphText,
+                      baseTextStyle,
+                      { textAlign: epubSettings.align, marginBottom: 16 },
+                    ]}>
+                    {renderInlineWithFootnotes(firstParagraph, baseTextStyle, footnoteStyle)}
+                  </Text>
+                </Pressable>
+              );
+            }
+
+            return (
+              <Pressable
+                onPress={() => handleSelectParagraph(firstParagraph)}
+                style={styles.paragraphPressable}>
+                <View style={styles.dropCapContainer}>
+                  {prefix.trim().length > 0 && (
+                    <View style={styles.dropCapPrefixRow}>
+                      {renderInlineWithFootnotes(prefix, baseTextStyle, footnoteStyle)}
+                    </View>
+                  )}
+                  <View style={styles.dropCapRow}>
+                    <View
+                      style={[
+                        styles.dropCapBox,
+                        {
+                          backgroundColor: activePalette.cardBg,
+                          borderColor: activePalette.border,
+                        },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.dropCapText,
+                          {
+                            fontFamily: RospiereFonts.headline,
+                            color: activePalette.accent,
+                          },
+                        ]}>
+                        {dropCapLetter}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.paragraphText,
+                        baseTextStyle,
+                        {
+                          textAlign: epubSettings.align,
+                          flex: 1,
+                        },
+                      ]}>
+                      {renderInlineWithFootnotes(rest, baseTextStyle, footnoteStyle)}
+                    </Text>
+                  </View>
+                </View>
+              </Pressable>
+            );
+          })()}
+
+          {/* Resto de párrafos del Canto / Tomo */}
+          {currentChapter.paragraphs.slice(1).map((p, pIdx) => {
+            const isQuote = isNotableQuotation(p);
+            const footnoteStyle = {
+              fontSize: Math.max(10, Math.round(epubSettings.fontSize * 0.58)),
+              lineHeight: Math.max(12, Math.round(epubSettings.fontSize * 0.7)),
+              fontWeight: '700' as const,
+              color: activePalette.secondaryText,
+            };
+            const baseTextStyle = {
+              fontFamily: resolvedFontFamily,
+              fontSize: epubSettings.fontSize,
+              lineHeight: resolvedLineHeight,
+              color: activePalette.text,
+            };
+
+            if (isQuote) {
+              return (
+                <Pressable
+                  key={`quote-${pIdx}`}
+                  onPress={() => handleSelectParagraph(p)}
+                  style={styles.paragraphPressable}>
+                  <View
+                    style={[
+                      styles.pullQuoteCard,
+                      {
+                        backgroundColor: activePalette.cardBg,
+                        borderColor: activePalette.border,
+                      },
+                    ]}>
+                    <Text
+                      style={[
+                        styles.pullQuoteText,
+                        {
+                          fontFamily: RospiereFonts.headline,
+                          color: activePalette.accent,
+                        },
+                      ]}>
+                      {p}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            }
+
+            return (
+              <Pressable
+                key={`p-${pIdx}`}
+                onPress={() => handleSelectParagraph(p)}
+                style={styles.paragraphPressable}>
                 <Text
                   style={[
-                    styles.dropCapText,
+                    styles.paragraphText,
+                    baseTextStyle,
                     {
-                      fontFamily: RospiereFonts.headline,
-                      color: activePalette.accent,
+                      textAlign: epubSettings.align,
+                      marginBottom: 16,
                     },
                   ]}>
-                  {dropCapLetter}
+                  {renderInlineWithFootnotes(p, baseTextStyle, footnoteStyle)}
                 </Text>
-              </View>
-              <Text
-                style={[
-                  styles.paragraphText,
-                  {
-                    fontFamily: resolvedFontFamily,
-                    fontSize: epubSettings.fontSize,
-                    lineHeight: resolvedLineHeight,
-                    color: activePalette.text,
-                    textAlign: epubSettings.align,
-                  },
-                ]}>
-                {restOfFirstParagraph}
-              </Text>
-            </View>
-          )}
+              </Pressable>
+            );
+          })}
 
-          {/* Glosa Marginal / Nota Asistente Lumiere en Flujo Editorial */}
-          {epubSettings.showAssistantNotes && (
-            <View
-              style={[
-                styles.assistantAside,
-                {
-                  backgroundColor: activePalette.cardBg,
-                  borderLeftColor: activePalette.accent,
-                },
-              ]}>
-              <View style={styles.asideHeaderRow}>
-                <MaterialIcons name="auto-awesome" size={14} color={activePalette.accent} />
-                <Text
-                  style={[styles.asideLabel, { color: activePalette.accent }]}>
-                  GLOSARIO LUMIERE • CLAVE HOMÉRICA
+          {/* Botones editoriales de navegación entre páginas con scroll suave al inicio */}
+          <View style={styles.canvasPaginationActions}>
+            {currentChapterIndex > 0 ? (
+              <Pressable
+                onPress={handlePrevChapter}
+                style={({ pressed }) => [
+                  styles.canvasNavButton,
+                  { borderColor: activePalette.border, backgroundColor: activePalette.cardBg },
+                  pressed && styles.pressed,
+                ]}>
+                <MaterialIcons name="chevron-left" size={18} color={activePalette.accent} />
+                <Text style={[styles.canvasNavButtonText, { color: activePalette.accent }]}>
+                  PÁGINA ANTERIOR
                 </Text>
-              </View>
-              <Text
-                style={[
-                  styles.asideParagraph,
-                  { color: activePalette.secondaryText },
+              </Pressable>
+            ) : (
+              <View style={{ flex: 1 }} />
+            )}
+
+            {currentChapterIndex < totalChapters - 1 ? (
+              <Pressable
+                onPress={handleNextChapter}
+                style={({ pressed }) => [
+                  styles.canvasNavButton,
+                  styles.canvasNavButtonPrimary,
+                  { backgroundColor: activePalette.accent },
+                  pressed && styles.pressed,
                 ]}>
-                En la tradición épica, la invocación a la Musa no es un mero adorno retórico,
-                sino la consagración de la memoria colectiva (Mnemósine). Odiseo es calificado
-                como «polýtropos» (de multiforme ingenio), definiendo el arquetipo de la astucia
-                frente a la fuerza bruta de Aquiles.
-              </Text>
-            </View>
-          )}
-
-          {/* Resto de párrafos del Canto */}
-          {currentChapter.paragraphs.slice(1, 4).map((p, pIdx) => (
-            <Text
-              key={`p-${pIdx}`}
-              style={[
-                styles.paragraphText,
-                {
-                  fontFamily: resolvedFontFamily,
-                  fontSize: epubSettings.fontSize,
-                  lineHeight: resolvedLineHeight,
-                  color: activePalette.text,
-                  textAlign: epubSettings.align,
-                  marginBottom: 16,
-                },
-              ]}>
-              {p}
-            </Text>
-          ))}
-
-          {/* Cita Editorial Destacada */}
-          <View
-            style={[
-              styles.pullQuoteCard,
-              {
-                backgroundColor: activePalette.cardBg,
-                borderColor: activePalette.border,
-              },
-            ]}>
-            <Text
-              style={[
-                styles.pullQuoteText,
-                {
-                  fontFamily: RospiereFonts.headline,
-                  color: activePalette.accent,
-                },
-              ]}>
-              «Háblame, Musa, de aquel varón de multiforme ingenio que, después de destruir Troya,
-              anduvo peregrinando larguísimo tiempo.»
-            </Text>
-            <Text
-              style={[
-                styles.pullQuoteAuthor,
-                { color: activePalette.secondaryText },
-              ]}>
-              — Proemio de La Odisea • Homero
-            </Text>
+                <Text style={[styles.canvasNavButtonText, { color: activePalette.bg }]}>
+                  SIGUIENTE PÁGINA
+                </Text>
+                <MaterialIcons name="chevron-right" size={18} color={activePalette.bg} />
+              </Pressable>
+            ) : (
+              <View style={{ flex: 1 }} />
+            )}
           </View>
-
-          {/* Párrafos adicionales */}
-          {currentChapter.paragraphs.slice(4, 9).map((p, pIdx) => (
-            <Text
-              key={`p2-${pIdx}`}
-              style={[
-                styles.paragraphText,
-                {
-                  fontFamily: resolvedFontFamily,
-                  fontSize: epubSettings.fontSize,
-                  lineHeight: resolvedLineHeight,
-                  color: activePalette.text,
-                  textAlign: epubSettings.align,
-                  marginBottom: 16,
-                },
-              ]}>
-              {p}
-            </Text>
-          ))}
 
           {/* Paginador flotante e indicador de término de escena */}
           <View style={styles.paginationIndicator}>
@@ -1125,111 +1512,6 @@ export default function EpubReaderScreen() {
               ]}>
               Fin de la escena • 7 minutos restantes de lectura
             </Text>
-          </View>
-        </View>
-
-        {/* ======================================================== */}
-        {/* MÓDULO INTERACTIVO DE CIERRE DE CAPÍTULO                 */}
-        {/* ======================================================== */}
-        <View
-          style={[
-            styles.interactiveEndModule,
-            { backgroundColor: activePalette.cardBg },
-          ]}>
-          <View style={styles.interactiveHeader}>
-            <View>
-              <Text
-                style={[
-                  styles.interactiveLabel,
-                  { color: activePalette.secondaryText },
-                ]}>
-                REFLEXIÓN CRÍTICA
-              </Text>
-              <Text
-                style={[
-                  styles.interactiveTitle,
-                  { color: activePalette.accent },
-                ]}>
-                Inmersión del Canto {currentChapterIndex + 1}
-              </Text>
-            </View>
-            <MaterialIcons name="psychology" size={22} color={activePalette.accent} />
-          </View>
-
-          <View style={styles.interactiveCardsRow}>
-            {/* Botón Cuestionario */}
-            <Pressable
-              style={({ pressed }) => [
-                styles.interactiveCard,
-                { backgroundColor: activePalette.bg },
-                pressed && styles.pressed,
-              ]}
-              onPress={() => {
-                setSelectedQuizAnswer(null);
-                setQuizFeedback(null);
-                setQuizModalVisible(true);
-              }}>
-              <View style={styles.cardTopRow}>
-                <Text
-                  style={[
-                    styles.cardTopLabel,
-                    { color: activePalette.secondaryText },
-                  ]}>
-                  COMPROBACIÓN
-                </Text>
-                <MaterialIcons
-                  name="arrow-forward"
-                  size={14}
-                  color={activePalette.secondaryText}
-                />
-              </View>
-              <Text
-                style={[styles.cardMainTitle, { color: activePalette.accent }]}>
-                Cuestionario del Canto
-              </Text>
-              <Text
-                style={[
-                  styles.cardSubText,
-                  { color: activePalette.secondaryText },
-                ]}>
-                3 preguntas analíticas
-              </Text>
-            </Pressable>
-
-            {/* Botón Glosario */}
-            <Pressable
-              style={({ pressed }) => [
-                styles.interactiveCard,
-                { backgroundColor: activePalette.bg },
-                pressed && styles.pressed,
-              ]}
-              onPress={() => setGlossaryModalVisible(true)}>
-              <View style={styles.cardTopRow}>
-                <Text
-                  style={[
-                    styles.cardTopLabel,
-                    { color: activePalette.secondaryText },
-                  ]}>
-                  COMPRENSIÓN
-                </Text>
-                <MaterialIcons
-                  name="arrow-forward"
-                  size={14}
-                  color={activePalette.secondaryText}
-                />
-              </View>
-              <Text
-                style={[styles.cardMainTitle, { color: activePalette.accent }]}>
-                Glosario Lumiere IA
-              </Text>
-              <Text
-                style={[
-                  styles.cardSubText,
-                  { color: activePalette.secondaryText },
-                ]}>
-                Conceptos y alusiones
-              </Text>
-            </Pressable>
           </View>
         </View>
       </ScrollView>
@@ -1319,95 +1601,7 @@ export default function EpubReaderScreen() {
       )}
 
       {/* ======================================================== */}
-      {/* QUIZ MODAL                                               */}
-      {/* ======================================================== */}
-      <Modal
-        visible={quizModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setQuizModalVisible(false)}>
-        <Pressable
-          style={styles.modalOverlay}
-          onPress={() => setQuizModalVisible(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.modalHeaderRow}>
-              <View>
-                <Text style={styles.modalSubLabel}>CUESTIONARIO SOCRÁTICO</Text>
-                <Text style={styles.modalTitle}>Inmersión del Canto {currentChapterIndex + 1}</Text>
-              </View>
-              <Pressable onPress={() => setQuizModalVisible(false)} hitSlop={10}>
-                <MaterialIcons name="close" size={20} color={RospiereColors.secondary} />
-              </Pressable>
-            </View>
-
-            <Text style={styles.modalQuestion}>
-              1. ¿Por qué razón Poseidón guarda rencor constante al divinal Odiseo impidiéndole
-              su retorno a Ítaca?
-            </Text>
-
-            <View style={styles.quizOptionsList}>
-              {[
-                {
-                  id: 0,
-                  text: 'Porque destruyó la estatua de Helios en la costa de Troya.',
-                  correct: false,
-                },
-                {
-                  id: 1,
-                  text: 'Porque cegó a su hijo, el ciclope Polifemo.',
-                  correct: true,
-                },
-                {
-                  id: 2,
-                  text: 'Porque se negó a ofrendar toros en la ciudad de Tafos.',
-                  correct: false,
-                },
-              ].map((opt) => {
-                const isSelected = selectedQuizAnswer === opt.id;
-                return (
-                  <Pressable
-                    key={opt.id}
-                    style={[
-                      styles.quizOptionBtn,
-                      isSelected && styles.quizOptionBtnSelected,
-                    ]}
-                    onPress={() => {
-                      setSelectedQuizAnswer(opt.id);
-                      if (opt.correct) {
-                        setQuizFeedback('¡Correcto! Poseidón vengó el ojo de Polifemo haciéndole errar por el ponto.');
-                      } else {
-                        setQuizFeedback('Incorrecto. Homero especifica que Odiseo cegó al ciclope Polifemo, hijo de Poseidón y Toosa.');
-                      }
-                    }}>
-                    <Text
-                      style={[
-                        styles.quizOptionText,
-                        isSelected && styles.quizOptionTextSelected,
-                      ]}>
-                      {opt.text}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            {quizFeedback && (
-              <View style={styles.quizFeedbackBox}>
-                <Text style={styles.quizFeedbackText}>{quizFeedback}</Text>
-              </View>
-            )}
-
-            <Pressable
-              style={styles.modalActionDone}
-              onPress={() => setQuizModalVisible(false)}>
-              <Text style={styles.modalActionDoneText}>CERRAR EVALUACIÓN</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* ======================================================== */}
-      {/* GLOSSARY MODAL                                           */}
+      {/* GLOSSARY MODAL (Dynamic Local or API IA)                  */}
       {/* ======================================================== */}
       <Modal
         visible={glossaryModalVisible}
@@ -1420,45 +1614,409 @@ export default function EpubReaderScreen() {
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
             <View style={styles.modalHeaderRow}>
               <View>
-                <Text style={styles.modalSubLabel}>GLOSARIO CRÍTICO LUMIERE</Text>
-                <Text style={styles.modalTitle}>Términos Clave del Canto</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.modalSubLabel}>GLOSARIO EDITORIAL • ROSPIERE</Text>
+                  {aiApiKey ? (
+                    <View style={styles.apiActiveBadge}>
+                      <Text style={styles.apiActiveText}>API {aiProvider.toUpperCase()}</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.apiLocalBadge}>
+                      <Text style={styles.apiLocalText}>AGENTE LOCAL</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.modalTitle} numberOfLines={1}>
+                  {selectedGlossaryTerm ? `«${selectedGlossaryTerm}»` : 'Término Seleccionado'}
+                </Text>
               </View>
               <Pressable onPress={() => setGlossaryModalVisible(false)} hitSlop={10}>
                 <MaterialIcons name="close" size={20} color={RospiereColors.secondary} />
               </Pressable>
             </View>
 
-            <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-              <View style={styles.glossaryItem}>
-                <Text style={styles.glossaryTerm}>Polýtropos (πολύτροπος)</Text>
-                <Text style={styles.glossaryDef}>
-                  Epíteto homérico de Odiseo: «de muchos giros», «de multiforme ingenio». Denota
-                  capacidad adaptativa, prudencia y versatilidad ante la adversidad.
-                </Text>
-              </View>
+            <ScrollView style={{ maxHeight: 280, marginVertical: 12 }} showsVerticalScrollIndicator={false}>
+              {isGlossaryLoading ? (
+                <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={RospiereColors.primary} />
+                  <Text
+                    style={{
+                      fontFamily: RospiereFonts.body,
+                      fontSize: 12,
+                      color: RospiereColors.secondary,
+                      marginTop: 10,
+                    }}>
+                    Consultando glosario etimológico y literario...
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.glossaryItem}>
+                  <Text style={styles.glossaryDef}>
+                    {glossaryDefinition ||
+                      'Selecciona cualquier palabra o frase en el texto para consultar su definición.'}
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
 
-              <View style={styles.glossaryItem}>
-                <Text style={styles.glossaryTerm}>Nóstos (νόστος)</Text>
-                <Text style={styles.glossaryDef}>
-                  El viaje heroico de regreso a la patria. Es el tema estructural de la Odisea,
-                  que contrasta con el «kléos» (gloria mortal bélica) predominante en la Ilíada.
+            <View style={styles.aiModalFooter}>
+              <Pressable
+                style={styles.configApiKeyLink}
+                onPress={() => {
+                  setGlossaryModalVisible(false);
+                  setAiKeyInput(aiApiKey || '');
+                  setAiKeyModalVisible(true);
+                }}>
+                <MaterialIcons name="vpn-key" size={14} color={RospiereColors.primary} />
+                <Text style={styles.configApiKeyLinkText}>
+                  {aiApiKey ? 'Modificar API Key de IA' : 'Configurar API Key propia (Gemini / OpenAI)'}
                 </Text>
-              </View>
+              </Pressable>
 
-              <View style={styles.glossaryItem}>
-                <Text style={styles.glossaryTerm}>Xenía (ξενία)</Text>
-                <Text style={styles.glossaryDef}>
-                  La ley sagrada de la hospitalidad custodiada por Zeus Xenios. La transgresión de
-                  este precepto por parte de los pretendientes sella su destino trágico.
-                </Text>
+              <Pressable
+                style={styles.modalActionDone}
+                onPress={() => setGlossaryModalVisible(false)}>
+                <Text style={styles.modalActionDoneText}>CERRAR GLOSARIO</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ======================================================== */}
+      {/* FLOATING CONTEXTUAL SELECTION BAR                        */}
+      {/* ======================================================== */}
+      {selectionMenuVisible && selectedSnippet && (
+        <View
+          style={[
+            styles.selectionFloatingCard,
+            {
+              backgroundColor: activePalette.cardBg,
+              borderColor: activePalette.border,
+              bottom: epubSettings.zenMode ? 24 : Math.max(insets.bottom + 60, 75),
+            },
+          ]}>
+          <View style={styles.selectionTopRow}>
+            <View style={styles.selectionBadgeWrap}>
+              <MaterialIcons name="format-quote" size={14} color={activePalette.accent} />
+              <Text style={[styles.selectionBadgeText, { color: activePalette.accent }]}>
+                PASAJES & ANOTACIÓN
+              </Text>
+            </View>
+            <Pressable onPress={() => setSelectionMenuVisible(false)} hitSlop={10}>
+              <MaterialIcons name="close" size={16} color={activePalette.secondaryText} />
+            </Pressable>
+          </View>
+
+          <Text style={[styles.selectionSnippetText, { color: activePalette.text }]} numberOfLines={2}>
+            «{selectedSnippet}»
+          </Text>
+
+          <View style={styles.selectionActionsRow}>
+            {/* 1. Subrayar / Marcador */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.selectionBtn,
+                { backgroundColor: activePalette.bg },
+                pressed && styles.pressed,
+              ]}
+              onPress={() => handleSaveHighlight(selectedSnippet)}>
+              <MaterialIcons name="bookmark" size={16} color={activePalette.accent} />
+              <Text style={[styles.selectionBtnText, { color: activePalette.accent }]}>
+                SUBRAYAR
+              </Text>
+            </Pressable>
+
+            {/* 2. Glosario */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.selectionBtn,
+                { backgroundColor: activePalette.bg },
+                pressed && styles.pressed,
+              ]}
+              onPress={() => handleOpenGlossaryForText(selectedSnippet)}>
+              <MaterialIcons name="menu-book" size={16} color={activePalette.accent} />
+              <Text style={[styles.selectionBtnText, { color: activePalette.accent }]}>
+                GLOSARIO
+              </Text>
+            </Pressable>
+
+            {/* 3. Consultar IA */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.selectionBtn,
+                styles.selectionBtnPrimary,
+                { backgroundColor: activePalette.accent },
+                pressed && styles.pressed,
+              ]}
+              onPress={() => handleConsultAI(selectedSnippet)}>
+              <MaterialIcons name="psychology" size={16} color={activePalette.bg} />
+              <Text style={[styles.selectionBtnText, { color: activePalette.bg }]}>
+                CONSULTAR IA
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      {/* ======================================================== */}
+      {/* TOAST CONFIRMATION BADGE                                 */}
+      {/* ======================================================== */}
+      {toastMessage && (
+        <View style={styles.toastContainer} pointerEvents="none">
+          <View style={styles.toastCard}>
+            <MaterialIcons name="check-circle" size={16} color="#FFFFFF" />
+            <Text style={styles.toastText}>{toastMessage}</Text>
+          </View>
+        </View>
+      )}
+
+      {/* ======================================================== */}
+      {/* BOOKMARKS / MARCADORES MODAL                             */}
+      {/* ======================================================== */}
+      <Modal
+        visible={bookmarksModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setBookmarksModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setBookmarksModalVisible(false)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalSubLabel}>TUS MARCADORES & CITAS</Text>
+                <Text style={styles.modalTitle}>{bookMeta.title}</Text>
               </View>
+              <Pressable onPress={() => setBookmarksModalVisible(false)} hitSlop={10}>
+                <MaterialIcons name="close" size={20} color={RospiereColors.secondary} />
+              </Pressable>
+            </View>
+
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+              {bookBookmarks.length === 0 ? (
+                <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                  <MaterialIcons name="bookmark-border" size={32} color={RospiereColors.secondary} />
+                  <Text
+                    style={{
+                      fontFamily: RospiereFonts.body,
+                      fontSize: 12,
+                      color: RospiereColors.secondary,
+                      marginTop: 8,
+                      textAlign: 'center',
+                    }}>
+                    No has guardado marcadores aún. Toca cualquier pasaje para subrayarlo y etiquetarlo.
+                  </Text>
+                </View>
+              ) : (
+                bookBookmarks.map((bm) => (
+                  <View key={bm.id} style={styles.bookmarkCard}>
+                    <View style={styles.bookmarkCardHeader}>
+                      <Text style={styles.bookmarkChapterTag}>{bm.chapterTitle}</Text>
+                      <Text style={styles.bookmarkDateText}>{bm.date}</Text>
+                    </View>
+                    <Text style={styles.bookmarkQuoteText}>«{bm.text}»</Text>
+                    <View style={styles.bookmarkActionsRow}>
+                      <Pressable
+                        style={styles.bookmarkJumpBtn}
+                        onPress={() => {
+                          setCurrentChapterIndex(bm.chapterIndex);
+                          updateEpubChapter(bookId, bm.chapterIndex);
+                          scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+                          setBookmarksModalVisible(false);
+                        }}>
+                        <Text style={styles.bookmarkJumpText}>IR AL CANTO</Text>
+                        <MaterialIcons name="arrow-forward" size={12} color={RospiereColors.primary} />
+                      </Pressable>
+                      <Pressable onPress={() => removeEpubBookmark(bm.id)} hitSlop={8}>
+                        <MaterialIcons name="delete-outline" size={16} color={RospiereColors.secondary} />
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              )}
             </ScrollView>
 
             <Pressable
               style={styles.modalActionDone}
-              onPress={() => setGlossaryModalVisible(false)}>
-              <Text style={styles.modalActionDoneText}>ENTENDIDO</Text>
+              onPress={() => setBookmarksModalVisible(false)}>
+              <Text style={styles.modalActionDoneText}>CERRAR MARCADORES</Text>
             </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ======================================================== */}
+      {/* AI CONSULTATION MODAL                                    */}
+      {/* ======================================================== */}
+      <Modal
+        visible={aiModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAiModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setAiModalVisible(false)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.modalSubLabel}>AGENTE SOCRÁTICO • ROSPIERE IA</Text>
+                  {aiApiKey ? (
+                    <View style={styles.apiActiveBadge}>
+                      <Text style={styles.apiActiveText}>API {aiProvider.toUpperCase()}</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.apiLocalBadge}>
+                      <Text style={styles.apiLocalText}>AGENTE LOCAL</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.modalTitle}>Análisis del Pasaje</Text>
+              </View>
+              <Pressable onPress={() => setAiModalVisible(false)} hitSlop={10}>
+                <MaterialIcons name="close" size={20} color={RospiereColors.secondary} />
+              </Pressable>
+            </View>
+
+            {selectedSnippet ? (
+              <View style={styles.aiQuotePreview}>
+                <Text style={styles.aiQuotePreviewText} numberOfLines={2}>
+                  «{selectedSnippet}»
+                </Text>
+              </View>
+            ) : null}
+
+            <ScrollView style={{ maxHeight: 250, marginVertical: 12 }} showsVerticalScrollIndicator={false}>
+              {isAiLoading ? (
+                <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={RospiereColors.primary} />
+                  <Text
+                    style={{
+                      fontFamily: RospiereFonts.body,
+                      fontSize: 12,
+                      color: RospiereColors.secondary,
+                      marginTop: 10,
+                    }}>
+                    Consultando al agente literario Rospiere...
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.aiResultText}>{aiResponse}</Text>
+              )}
+            </ScrollView>
+
+            <View style={styles.aiModalFooter}>
+              <Pressable
+                style={styles.configApiKeyLink}
+                onPress={() => {
+                  setAiModalVisible(false);
+                  setAiKeyInput(aiApiKey || '');
+                  setAiKeyModalVisible(true);
+                }}>
+                <MaterialIcons name="vpn-key" size={14} color={RospiereColors.primary} />
+                <Text style={styles.configApiKeyLinkText}>
+                  {aiApiKey ? 'Modificar API Key de IA' : 'Configurar API Key propia (Gemini / OpenAI)'}
+                </Text>
+              </Pressable>
+
+              <Pressable style={styles.modalActionDone} onPress={() => setAiModalVisible(false)}>
+                <Text style={styles.modalActionDoneText}>ENTENDIDO</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ======================================================== */}
+      {/* API KEY CONFIG MODAL                                     */}
+      {/* ======================================================== */}
+      <Modal
+        visible={aiKeyModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAiKeyModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setAiKeyModalVisible(false)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeaderRow}>
+              <View>
+                <Text style={styles.modalSubLabel}>INTEGRACIÓN INTELIGENCIA ARTIFICIAL</Text>
+                <Text style={styles.modalTitle}>Configurar API de IA</Text>
+              </View>
+              <Pressable onPress={() => setAiKeyModalVisible(false)} hitSlop={10}>
+                <MaterialIcons name="close" size={20} color={RospiereColors.secondary} />
+              </Pressable>
+            </View>
+
+            <Text style={styles.apiKeyExplanation}>
+              Puedes ingresar una API Key de Google Gemini o OpenAI. Si no configuras ninguna, la app utilizará su motor analítico local integrado.
+            </Text>
+
+            {/* Provider selector */}
+            <View style={styles.providerRow}>
+              <Pressable
+                style={[styles.providerBtn, aiProvider === 'gemini' && styles.providerBtnActive]}
+                onPress={() => setAiProvider('gemini')}>
+                <Text
+                  style={[
+                    styles.providerBtnText,
+                    aiProvider === 'gemini' && styles.providerBtnTextActive,
+                  ]}>
+                  GEMINI
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.providerBtn, aiProvider === 'openai' && styles.providerBtnActive]}
+                onPress={() => setAiProvider('openai')}>
+                <Text
+                  style={[
+                    styles.providerBtnText,
+                    aiProvider === 'openai' && styles.providerBtnTextActive,
+                  ]}>
+                  OPENAI
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.providerBtn, aiProvider === 'local' && styles.providerBtnActive]}
+                onPress={() => setAiProvider('local')}>
+                <Text
+                  style={[
+                    styles.providerBtnText,
+                    aiProvider === 'local' && styles.providerBtnTextActive,
+                  ]}>
+                  LOCAL (OFFLINE)
+                </Text>
+              </Pressable>
+            </View>
+
+            {aiProvider !== 'local' && (
+              <TextInput
+                value={aiKeyInput}
+                onChangeText={setAiKeyInput}
+                placeholder="Pega tu API key aquí (AIza... o sk-...)"
+                placeholderTextColor="#999999"
+                style={styles.apiKeyInput}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+              />
+            )}
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+              <Pressable
+                style={[styles.modalActionDone, { flex: 1, backgroundColor: RospiereColors.surfaceContainer }]}
+                onPress={() => setAiKeyModalVisible(false)}>
+                <Text style={[styles.modalActionDoneText, { color: RospiereColors.onSurface }]}>
+                  CANCELAR
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalActionDone, { flex: 1 }]}
+                onPress={() => {
+                  setAiApiKey(aiKeyInput.trim());
+                  setAiKeyModalVisible(false);
+                  setToastMessage('Configuración de IA actualizada');
+                  setTimeout(() => setToastMessage(null), 2500);
+                }}>
+                <Text style={styles.modalActionDoneText}>GUARDAR</Text>
+              </Pressable>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -1842,6 +2400,13 @@ const styles = StyleSheet.create({
   dropCapContainer: {
     marginBottom: 16,
   },
+  dropCapPrefixRow: {
+    marginBottom: 6,
+  },
+  dropCapRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
   dropCapBox: {
     width: 48,
     height: 48,
@@ -1850,6 +2415,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'flex-start',
+    borderWidth: 1,
   },
   dropCapText: {
     fontSize: 34,
@@ -2144,5 +2710,283 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     lineHeight: 17,
     color: '#555555',
+  },
+  paragraphPressable: {
+    position: 'relative',
+  },
+  canvasPaginationActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 24,
+    marginBottom: 12,
+  },
+  canvasNavButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+  },
+  canvasNavButtonPrimary: {
+    borderWidth: 0,
+  },
+  canvasNavButtonText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 10,
+    letterSpacing: 1.5,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  selectionFloatingCard: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    padding: 16,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    zIndex: 50,
+  },
+  selectionTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  selectionBadgeWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  selectionBadgeText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8.5,
+    letterSpacing: 2,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  selectionSnippetText: {
+    fontFamily: RospiereFonts.headline,
+    fontSize: 13,
+    fontStyle: 'italic',
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  selectionActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  selectionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 9,
+    paddingHorizontal: 6,
+  },
+  selectionBtnPrimary: {
+    // Custom primary
+  },
+  selectionBtnText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9,
+    letterSpacing: 1.5,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  toastContainer: {
+    position: 'absolute',
+    top: 70,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 99,
+  },
+  toastCard: {
+    backgroundColor: '#000000',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  toastText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 10.5,
+    letterSpacing: 1.2,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  bookmarkCard: {
+    padding: 14,
+    backgroundColor: '#F9F9F9',
+    borderLeftWidth: 3,
+    borderLeftColor: '#000000',
+    marginBottom: 12,
+  },
+  bookmarkCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  bookmarkChapterTag: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9,
+    letterSpacing: 1.5,
+    color: '#000000',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  bookmarkDateText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8.5,
+    color: '#888888',
+  },
+  bookmarkQuoteText: {
+    fontFamily: RospiereFonts.headline,
+    fontSize: 12.5,
+    fontStyle: 'italic',
+    lineHeight: 18,
+    color: '#222222',
+    marginBottom: 10,
+  },
+  bookmarkActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  bookmarkJumpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  bookmarkJumpText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9.5,
+    letterSpacing: 1.5,
+    fontWeight: '700',
+    color: '#000000',
+  },
+  apiActiveBadge: {
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 2,
+  },
+  apiActiveText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8,
+    color: '#2E7D32',
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  apiLocalBadge: {
+    backgroundColor: '#F0F0F0',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 2,
+  },
+  apiLocalText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8,
+    color: '#555555',
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  aiQuotePreview: {
+    padding: 10,
+    backgroundColor: '#F7F7F7',
+    borderLeftWidth: 2,
+    borderLeftColor: '#000000',
+    marginBottom: 10,
+  },
+  aiQuotePreviewText: {
+    fontFamily: RospiereFonts.body,
+    fontSize: 11.5,
+    fontStyle: 'italic',
+    color: '#444444',
+  },
+  aiResultText: {
+    fontFamily: RospiereFonts.body,
+    fontSize: 12.5,
+    lineHeight: 20,
+    color: '#1A1A1A',
+  },
+  aiModalFooter: {
+    marginTop: 10,
+    gap: 10,
+  },
+  configApiKeyLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+  },
+  configApiKeyLinkText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9.5,
+    letterSpacing: 1.2,
+    color: '#444444',
+    textDecorationLine: 'underline',
+  },
+  apiKeyExplanation: {
+    fontFamily: RospiereFonts.body,
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#555555',
+    marginBottom: 16,
+  },
+  providerRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  providerBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F2F2F2',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  providerBtnActive: {
+    backgroundColor: '#000000',
+    borderColor: '#000000',
+  },
+  providerBtnText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9,
+    letterSpacing: 1.2,
+    color: '#444444',
+    fontWeight: '600',
+  },
+  providerBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  apiKeyInput: {
+    borderWidth: 1,
+    borderColor: '#D4D4D4',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: RospiereFonts.body,
+    fontSize: 12,
+    backgroundColor: '#FAFAFA',
   },
 });

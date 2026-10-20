@@ -12,6 +12,7 @@ import {
   EpubMargin,
   EpubThemeMode,
   EpubAlign,
+  EpubBookmarkItem,
 } from '@/types/rospiere';
 import {
   INITIAL_BOOKS,
@@ -114,6 +115,17 @@ interface RospiereContextType {
   updateEpubChapter: (bookId: string, chapterIndex: number) => void;
   toggleEpubBookmark: (bookId: string) => void;
   getCustomEpubData: (bookId: string) => ParsedEpub | undefined;
+  
+  // EPUB Bookmarks & Highlights (Marcadores)
+  epubBookmarks: EpubBookmarkItem[];
+  addEpubBookmark: (item: Omit<EpubBookmarkItem, 'id' | 'date'>) => void;
+  removeEpubBookmark: (id: string) => void;
+
+  // AI Configuration for Literary Assistant
+  aiApiKey: string;
+  setAiApiKey: (key: string) => void;
+  aiProvider: 'gemini' | 'openai' | 'local';
+  setAiProvider: (provider: 'gemini' | 'openai' | 'local') => void;
 }
 
 const RospiereContext = createContext<RospiereContextType | undefined>(undefined);
@@ -327,6 +339,39 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
     setEpubSettings((prev) => ({ ...prev, zenMode: !prev.zenMode }));
   };
 
+  // Bookmarks & AI Config
+  const [epubBookmarks, setEpubBookmarks] = useState<EpubBookmarkItem[]>([
+    {
+      id: 'bm-init-1',
+      bookId: 'odisea-homero',
+      chapterIndex: 0,
+      chapterTitle: 'Canto I: Concilio de los dioses',
+      text: '«Háblame, Musa, de aquel varón de multiforme ingenio que, después de destruir la sacra ciudad de Troya, anduvo peregrinando larguísimo tiempo...»',
+      date: '20 Oct, 18:30',
+      color: '#E0D0B8',
+    },
+  ]);
+  const [aiApiKey, setAiApiKey] = useState<string>('');
+  const [aiProvider, setAiProvider] = useState<'gemini' | 'openai' | 'local'>('local');
+
+  const addEpubBookmark = (item: Omit<EpubBookmarkItem, 'id' | 'date'>) => {
+    const newBookmark: EpubBookmarkItem = {
+      ...item,
+      id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      date: new Date().toLocaleDateString('es-ES', {
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+    setEpubBookmarks((prev) => [newBookmark, ...prev]);
+  };
+
+  const removeEpubBookmark = (id: string) => {
+    setEpubBookmarks((prev) => prev.filter((b) => b.id !== id));
+  };
+
   const addImportedEpubBook = (book: EpubBookItem, parsedData?: ParsedEpub) => {
     setImportedEpubBooks((prev) => {
       const existsIndex = prev.findIndex((b) => b.id === book.id);
@@ -336,6 +381,53 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
         return copy;
       }
       return [book, ...prev];
+    });
+
+    // Mirror in main books catalog so it appears in Novedades & Estantería
+    const bookEntry: Book = {
+      id: book.id,
+      title: book.title,
+      author: book.author || 'Autor Desconocido',
+      coverImage:
+        book.coverImage ||
+        'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80',
+      badge: 'EPUB',
+      category: 'Novedades',
+      edition: 'Tomo EPUB Importado',
+      rating: 4.9,
+      remainingTime: `${Math.max(1, Math.round((book.totalChapters || 1) * 0.4))}h aprox.`,
+      pagesTotal: Math.max(20, (book.totalChapters || 1) * 20),
+      currentPage: Math.max(1, ((book.currentChapterIndex || 0) + 1) * 20),
+      isBookmarked: false,
+      status: 'reading',
+      isEpub: true,
+      totalChapters: book.totalChapters,
+      currentChapterIndex: book.currentChapterIndex || 0,
+      sourceType: 'imported',
+      synopsis:
+        book.description ||
+        `Edición digital completa en formato EPUB 3.0 / 2.0 con ${book.totalChapters} capítulos indexados.`,
+      sampleChapter: {
+        chapterNumber: 'Capítulo 1',
+        part: 'Apertura',
+        title: parsedData?.chapters[0]?.title || 'Capítulo Inicial',
+        quote:
+          parsedData?.chapters[0]?.paragraphs[0]?.slice(0, 120) ||
+          'Inicio del tomo editorial importado.',
+        content: parsedData?.chapters[0]?.paragraphs?.slice(0, 3) || [
+          'Contenido inicial del tomo importado.',
+        ],
+      },
+    };
+
+    setBooks((prev) => {
+      const exists = prev.findIndex((b) => b.id === book.id);
+      if (exists >= 0) {
+        const copy = [...prev];
+        copy[exists] = { ...copy[exists], ...bookEntry };
+        return copy;
+      }
+      return [bookEntry, ...prev]; // Prepend to books so it appears first in Novedades
     });
 
     if (parsedData) {
@@ -361,10 +453,34 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
         return b;
       })
     );
+
+    // Sync progress in books state so library mirrors exact position
+    setBooks((prev) =>
+      prev.map((b) => {
+        if (b.id === bookId) {
+          const totalCh = b.totalChapters || 1;
+          const progressPercent = Math.min(100, Math.round(((chapterIndex + 1) / totalCh) * 100));
+          const newCurrentPage = Math.min(
+            b.pagesTotal,
+            Math.max(1, Math.round(((chapterIndex + 1) / totalCh) * b.pagesTotal))
+          );
+          return {
+            ...b,
+            currentChapterIndex: chapterIndex,
+            currentPage: newCurrentPage,
+            status: progressPercent >= 100 ? 'completed' : 'reading',
+          };
+        }
+        return b;
+      })
+    );
   };
 
   const toggleEpubBookmark = (bookId: string) => {
     setImportedEpubBooks((prev) =>
+      prev.map((b) => (b.id === bookId ? { ...b, isBookmarked: !b.isBookmarked } : b))
+    );
+    setBooks((prev) =>
       prev.map((b) => (b.id === bookId ? { ...b, isBookmarked: !b.isBookmarked } : b))
     );
   };
@@ -413,6 +529,15 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
         updateEpubChapter,
         toggleEpubBookmark,
         getCustomEpubData,
+        
+        // Bookmarks & AI
+        epubBookmarks,
+        addEpubBookmark,
+        removeEpubBookmark,
+        aiApiKey,
+        setAiApiKey,
+        aiProvider,
+        setAiProvider,
       }}>
       {children}
     </RospiereContext.Provider>

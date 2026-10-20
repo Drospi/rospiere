@@ -14,6 +14,10 @@ export interface Book {
   isBookmarked: boolean;
   status: 'reading' | 'to_read' | 'completed';
   synopsis: string;
+  isEpub?: boolean;
+  totalChapters?: number;
+  currentChapterIndex?: number;
+  sourceType?: 'bundle' | 'imported';
   sampleChapter: {
     chapterNumber: string;
     part: string;
@@ -154,4 +158,14 @@ export interface CustomEpubData {
   author: string;
   coverBase64?: string;
   chapters: EpubChapterContent[];
+}
+
+export interface EpubBookmarkItem {
+  id: string;
+  bookId: string;
+  chapterIndex: number;
+  chapterTitle: string;
+  text: string;
+  date: string;
+  color?: string;
 }

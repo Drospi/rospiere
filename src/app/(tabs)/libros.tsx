@@ -191,11 +191,19 @@ export default function LibrosScreen() {
                   ? Math.round((book.currentPage / book.pagesTotal) * 100)
                   : 0;
 
+              const handleOpenBook = () => {
+                if (book.isEpub || book.id === 'odisea-homero' || book.sourceType === 'imported') {
+                  router.push(`/epub/reader?id=${book.id}` as any);
+                } else {
+                  router.push(`/book/${book.id}` as any);
+                }
+              };
+
               return (
                 <Pressable
                   key={book.id}
                   style={({ pressed }) => [styles.bookRowCard, pressed && styles.pressed]}
-                  onPress={() => router.push(`/book/${book.id}` as any)}>
+                  onPress={handleOpenBook}>
                   <View style={styles.rowCoverWrap}>
                     <Image
                       source={{ uri: book.coverImage }}
@@ -203,7 +211,7 @@ export default function LibrosScreen() {
                       resizeMode="cover"
                     />
                     <View style={styles.rowBadge}>
-                      <Text style={styles.rowBadgeText}>{book.badge || book.category}</Text>
+                      <Text style={styles.rowBadgeText}>{book.badge || (book.isEpub ? 'EPUB' : book.category)}</Text>
                     </View>
                   </View>
 
@@ -236,7 +244,9 @@ export default function LibrosScreen() {
                       <View style={styles.progressContainer}>
                         <View style={styles.progressHeader}>
                           <Text style={styles.progressText}>
-                            Pág. {book.currentPage} de {book.pagesTotal} ({progress}%)
+                            {book.isEpub && book.totalChapters
+                              ? `Canto ${(book.currentChapterIndex || 0) + 1} de ${book.totalChapters} (${progress}%)`
+                              : `Pág. ${book.currentPage} de ${book.pagesTotal} (${progress}%)`}
                           </Text>
                           <Text style={styles.progressRemaining}>{book.remainingTime}</Text>
                         </View>
@@ -260,7 +270,7 @@ export default function LibrosScreen() {
                     <View style={styles.rowActions}>
                       <Pressable
                         style={styles.actionReadBtn}
-                        onPress={() => router.push(`/book/${book.id}` as any)}>
+                        onPress={handleOpenBook}>
                         <Text style={styles.actionReadText}>
                           {book.status === 'reading' ? 'CONTINUAR' : 'LEER OBRA'}
                         </Text>

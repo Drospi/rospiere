@@ -149,10 +149,14 @@ export default function BookDetailScreen() {
             <Pressable
               style={({ pressed }) => [styles.primaryActionBtn, pressed && styles.pressed]}
               onPress={() => {
-                // Focus on reader section
+                if (book.isEpub || book.id === 'odisea-homero' || book.sourceType === 'imported') {
+                  router.push(`/epub/reader?id=${book.id}` as any);
+                }
               }}>
               <MaterialIcons name="menu-book" size={17} color={RospiereColors.onPrimary} />
-              <Text style={styles.primaryActionText}>CONTINUAR LEYENDO</Text>
+              <Text style={styles.primaryActionText}>
+                {book.isEpub ? 'ABRIR EN LECTOR EPUB' : 'CONTINUAR LEYENDO'}
+              </Text>
             </Pressable>
 
             <Pressable

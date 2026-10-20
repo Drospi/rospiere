@@ -42,9 +42,16 @@ export default function DescubrirScreen() {
 
   // Filter books based on category and search
   const filteredBooks = books.filter((book) => {
+    const isEpubOrImported =
+      book.isEpub ||
+      book.category === 'Novedades' ||
+      book.sourceType === 'imported' ||
+      book.id === 'odisea-homero';
+
     const matchesCategory =
       selectedCategory === 'Todos' ||
-      selectedCategory === 'eBooks' ||
+      (selectedCategory === 'eBooks' && (book.badge === 'eBook' || book.isEpub)) ||
+      (selectedCategory === 'Novedades' && isEpubOrImported) ||
       book.category.toLowerCase().includes(selectedCategory.toLowerCase()) ||
       (selectedCategory === 'Bestsellers' && book.rating >= 4.8);
 
@@ -77,10 +84,18 @@ export default function DescubrirScreen() {
     }
   };
 
+  const handleOpenBook = (item: Book) => {
+    if (item.isEpub || item.id === 'odisea-homero' || item.sourceType === 'imported') {
+      router.push(`/epub/reader?id=${item.id}` as any);
+    } else {
+      router.push(`/book/${item.id}` as any);
+    }
+  };
+
   const renderBookItem = ({ item }: { item: Book }) => (
     <Pressable
       style={({ pressed }) => [styles.bookCard, pressed && styles.cardPressed]}
-      onPress={() => router.push(`/book/${item.id}` as any)}>
+      onPress={() => handleOpenBook(item)}>
       <View style={styles.imageContainer}>
         <Image
           source={{ uri: item.coverImage }}
@@ -104,7 +119,9 @@ export default function DescubrirScreen() {
 
         {/* Bottom category tag */}
         <View style={styles.coverBadge}>
-          <Text style={styles.coverBadgeText}>{item.badge || item.category}</Text>
+          <Text style={styles.coverBadgeText}>
+            {item.badge || (item.isEpub ? 'EPUB' : item.category)}
+          </Text>
         </View>
       </View>
 
@@ -119,7 +136,7 @@ export default function DescubrirScreen() {
         <View style={styles.cardFooter}>
           <Pressable
             style={styles.readButton}
-            onPress={() => router.push(`/book/${item.id}` as any)}>
+            onPress={() => handleOpenBook(item)}>
             <Text style={styles.readButtonText}>LEER</Text>
             <MaterialIcons name="arrow-forward" size={13} color={RospiereColors.primary} />
           </Pressable>
