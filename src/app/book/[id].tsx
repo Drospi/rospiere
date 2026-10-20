@@ -7,9 +7,13 @@ import {
   Pressable,
   Image,
   Modal,
+  TextInput,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
+import * as DocumentPicker from 'expo-document-picker';
 import { RospiereHeader } from '@/components/RospiereHeader';
 import { RospiereColors, RospiereFonts } from '@/constants/rospiereTheme';
 import { useRospiere, ReaderThemeMode } from '@/context/RospiereContext';
@@ -25,19 +29,127 @@ export default function BookDetailScreen() {
     bookmarkedPages,
     togglePageBookmark,
     quizzes,
+    deleteBook,
+    updateBook,
+    generateQuizWithAI,
   } = useRospiere();
 
   const [notesModalVisible, setNotesModalVisible] = useState(false);
   const [dictionaryModalVisible, setDictionaryModalVisible] = useState(false);
 
-  const book = getBook(id || 'klara-y-el-sol') || getBook('klara-y-el-sol')!;
-  const matchingQuiz = quizzes.find((q) => q.bookId === book.id) || quizzes[0];
+  // Edit modal states
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editAuthor, setEditAuthor] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editSynopsis, setEditSynopsis] = useState('');
+  const [editCoverImage, setEditCoverImage] = useState('');
+  const [isPickingCover, setIsPickingCover] = useState(false);
 
+  // Delete modal states
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+
+  // AI Quiz generation state
+  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const book = getBook(id || 'klara-y-el-sol') || getBook('klara-y-el-sol');
+
+  if (!book) {
+    return (
+      <View style={styles.screen}>
+        <RospiereHeader title="Obra no encontrada" showBack onBack={() => router.back()} />
+        <View style={styles.notFoundContainer}>
+          <MaterialIcons name="auto-stories" size={48} color={RospiereColors.secondary} />
+          <Text style={styles.notFoundTitle}>Esta obra no está disponible</Text>
+          <Text style={styles.notFoundDesc}>El libro ha sido eliminado o no existe en la biblioteca.</Text>
+          <Pressable style={styles.backCatalogBtn} onPress={() => router.replace('/(tabs)/libros')}>
+            <Text style={styles.backCatalogBtnText}>VOLVER A LA ESTANTERÍA</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  const matchingQuiz = quizzes.find((q) => q.bookId === book.id) || quizzes[0];
   const currentTheme = RospiereColors.reader[readerSettings.theme];
   const pagesBookmarked = bookmarkedPages[book.id] || [];
   const isCurrentPageBookmarked = pagesBookmarked.includes(book.currentPage);
-
   const progressPercent = Math.round((book.currentPage / book.pagesTotal) * 100);
+
+  const handleStartEdit = () => {
+    setEditTitle(book.title);
+    setEditAuthor(book.author);
+    setEditCategory(book.category);
+    setEditSynopsis(book.synopsis || '');
+    setEditCoverImage(book.coverImage);
+    setEditModalVisible(true);
+  };
+
+  const handlePickCoverImage = async () => {
+    try {
+      setIsPickingCover(true);
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['image/*'],
+        copyToCacheDirectory: true,
+      });
+      setIsPickingCover(false);
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        setEditCoverImage(res.assets[0].uri);
+        showToast('Foto de portada actualizada');
+      }
+    } catch {
+      setIsPickingCover(false);
+      Alert.alert('Error', 'No se pudo seleccionar la foto de portada.');
+    }
+  };
+
+  const handleSaveEdit = () => {
+    if (!editTitle.trim()) {
+      Alert.alert('Campo obligatorio', 'Por favor ingresa un título para la obra.');
+      return;
+    }
+    updateBook(book.id, {
+      title: editTitle.trim(),
+      author: editAuthor.trim() || 'Autor Desconocido',
+      category: editCategory.trim() || 'Literatura',
+      coverImage: editCoverImage.trim() || book.coverImage,
+      synopsis: editSynopsis.trim() || book.synopsis,
+    });
+    setEditModalVisible(false);
+    showToast('¡Obra actualizada con éxito!');
+  };
+
+  const handleConfirmDelete = () => {
+    deleteBook(book.id);
+    setDeleteModalVisible(false);
+    router.replace('/(tabs)/libros');
+  };
+
+  const handleOpenQuiz = async () => {
+    if (matchingQuiz && matchingQuiz.bookId === book.id) {
+      router.push(`/quiz/${matchingQuiz.id}` as any);
+    } else {
+      setIsGeneratingQuiz(true);
+      try {
+        const generated = await generateQuizWithAI(book.title, book.author);
+        setIsGeneratingQuiz(false);
+        router.push(`/quiz/${generated.id}` as any);
+      } catch {
+        setIsGeneratingQuiz(false);
+        if (matchingQuiz) {
+          router.push(`/quiz/${matchingQuiz.id}` as any);
+        } else {
+          Alert.alert('Error', 'No se pudo generar el cuestionario con IA.');
+        }
+      }
+    }
+  };
 
   return (
     <View style={styles.screen}>
@@ -46,17 +158,42 @@ export default function BookDetailScreen() {
         showBack
         onBack={() => router.back()}
         rightAction={
-          <Pressable
-            style={({ pressed }) => [styles.topBookmarkBtn, pressed && styles.pressed]}
-            onPress={() => toggleBookmark(book.id)}>
-            <MaterialIcons
-              name={book.isBookmarked ? 'bookmark' : 'bookmark-border'}
-              size={22}
-              color={RospiereColors.onSurface}
-            />
-          </Pressable>
+          <View style={styles.topHeaderActions}>
+            <Pressable
+              style={({ pressed }) => [styles.topIconBtn, pressed && styles.pressed]}
+              onPress={handleStartEdit}
+              hitSlop={8}
+              accessibilityLabel="Editar libro">
+              <MaterialIcons name="edit" size={20} color={RospiereColors.onSurface} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.topIconBtn, pressed && styles.pressed]}
+              onPress={() => setDeleteModalVisible(true)}
+              hitSlop={8}
+              accessibilityLabel="Eliminar libro">
+              <MaterialIcons name="delete-outline" size={20} color={RospiereColors.error} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.topIconBtn, pressed && styles.pressed]}
+              onPress={() => toggleBookmark(book.id)}
+              hitSlop={8}
+              accessibilityLabel="Guardar favorito">
+              <MaterialIcons
+                name={book.isBookmarked ? 'bookmark' : 'bookmark-border'}
+                size={22}
+                color={RospiereColors.primary}
+              />
+            </Pressable>
+          </View>
         }
       />
+
+      {toastMessage && (
+        <View style={styles.toastCard}>
+          <MaterialIcons name="check-circle" size={15} color={RospiereColors.onPrimary} />
+          <Text style={styles.toastText}>{toastMessage}</Text>
+        </View>
+      )}
 
       <ScrollView
         style={styles.container}
@@ -161,9 +298,16 @@ export default function BookDetailScreen() {
 
             <Pressable
               style={({ pressed }) => [styles.quizActionBtn, pressed && styles.pressed]}
-              onPress={() => router.push(`/quiz/${matchingQuiz.id}` as any)}>
-              <MaterialIcons name="quiz" size={17} color={RospiereColors.onSurface} />
-              <Text style={styles.quizActionText}>CUESTIONARIO</Text>
+              onPress={handleOpenQuiz}
+              disabled={isGeneratingQuiz}>
+              {isGeneratingQuiz ? (
+                <ActivityIndicator size="small" color={RospiereColors.onSurface} />
+              ) : (
+                <>
+                  <MaterialIcons name="quiz" size={17} color={RospiereColors.onSurface} />
+                  <Text style={styles.quizActionText}>CUESTIONARIO IA</Text>
+                </>
+              )}
             </Pressable>
 
             <Pressable
@@ -172,8 +316,25 @@ export default function BookDetailScreen() {
               <MaterialIcons
                 name={book.isBookmarked ? 'bookmark' : 'bookmark-border'}
                 size={19}
-                color={RospiereColors.onSurface}
+                color={RospiereColors.primary}
               />
+            </Pressable>
+          </View>
+
+          {/* Secondary Quick Actions: Editar y Eliminar */}
+          <View style={styles.bookSecondaryActions}>
+            <Pressable
+              style={styles.bookSecondaryBtn}
+              onPress={handleStartEdit}>
+              <MaterialIcons name="edit" size={14} color={RospiereColors.secondary} />
+              <Text style={styles.bookSecondaryText}>EDITAR INFORMACIÓN & PORTADA</Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.bookSecondaryBtn, styles.bookDeleteBtn]}
+              onPress={() => setDeleteModalVisible(true)}>
+              <MaterialIcons name="delete-outline" size={14} color={RospiereColors.error} />
+              <Text style={styles.bookDeleteText}>ELIMINAR</Text>
             </Pressable>
           </View>
         </View>
@@ -500,6 +661,195 @@ export default function BookDetailScreen() {
               onPress={() => setDictionaryModalVisible(false)}>
               <Text style={styles.modalCloseBtnText}>VOLVER A LA LECTURA</Text>
             </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ======================================================== */}
+      {/* EDIT BOOK MODAL                                          */}
+      {/* ======================================================== */}
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setEditModalVisible(false)}>
+          <Pressable style={styles.editModalContent} onPress={(e) => e.stopPropagation()}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.modalHeaderRow}>
+                <View>
+                  <Text style={styles.modalHeading}>EDICIÓN BIBLIOGRÁFICA</Text>
+                  <Text style={styles.editModalTitle}>Editar Obra</Text>
+                </View>
+                <Pressable
+                  onPress={() => setEditModalVisible(false)}
+                  hitSlop={8}
+                  style={styles.modalCloseIconBtn}>
+                  <MaterialIcons name="close" size={20} color={RospiereColors.secondary} />
+                </Pressable>
+              </View>
+
+              {/* Cover Photo Preview & Upload Controls */}
+              <View style={styles.coverEditSection}>
+                <View style={styles.coverPreviewCard}>
+                  {editCoverImage ? (
+                    <Image
+                      source={{ uri: editCoverImage }}
+                      style={styles.coverPreviewImg}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.coverPlaceholder}>
+                      <MaterialIcons name="menu-book" size={28} color={RospiereColors.secondary} />
+                      <Text style={styles.coverPlaceholderText}>Sin portada</Text>
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.coverActionsCol}>
+                  <Text style={styles.fieldLabel}>FOTO DE PORTADA</Text>
+                  <Text style={styles.coverHint}>
+                    Sube una portada desde tu galería o archivos locales.
+                  </Text>
+                  <Pressable
+                    style={styles.uploadCoverBtn}
+                    onPress={handlePickCoverImage}
+                    disabled={isPickingCover}>
+                    {isPickingCover ? (
+                      <ActivityIndicator size="small" color={RospiereColors.onPrimary} />
+                    ) : (
+                      <>
+                        <MaterialIcons
+                          name="add-photo-alternate"
+                          size={16}
+                          color={RospiereColors.onPrimary}
+                        />
+                        <Text style={styles.uploadCoverBtnText}>CAMBIAR FOTO</Text>
+                      </>
+                    )}
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* URL Input */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.fieldLabel}>O ENLACE WEB DE IMAGEN (URL)</Text>
+                <TextInput
+                  value={editCoverImage}
+                  onChangeText={setEditCoverImage}
+                  placeholder="https://ejemplo.com/portada.jpg"
+                  placeholderTextColor={RospiereColors.outlineVariant}
+                  style={styles.textInput}
+                  autoCapitalize="none"
+                />
+              </View>
+
+              {/* Title Field */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.fieldLabel}>TÍTULO DE LA OBRA *</Text>
+                <TextInput
+                  value={editTitle}
+                  onChangeText={setEditTitle}
+                  placeholder="Título..."
+                  placeholderTextColor={RospiereColors.outlineVariant}
+                  style={styles.textInput}
+                />
+              </View>
+
+              {/* Author Field */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.fieldLabel}>AUTOR / TRADUCTOR</Text>
+                <TextInput
+                  value={editAuthor}
+                  onChangeText={setEditAuthor}
+                  placeholder="Autor..."
+                  placeholderTextColor={RospiereColors.outlineVariant}
+                  style={styles.textInput}
+                />
+              </View>
+
+              {/* Category Field */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.fieldLabel}>GÉNERO / COLECCIÓN</Text>
+                <TextInput
+                  value={editCategory}
+                  onChangeText={setEditCategory}
+                  placeholder="Categoría..."
+                  placeholderTextColor={RospiereColors.outlineVariant}
+                  style={styles.textInput}
+                />
+              </View>
+
+              {/* Synopsis Field */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.fieldLabel}>SINOPSIS / NOTA EDITORIAL</Text>
+                <TextInput
+                  value={editSynopsis}
+                  onChangeText={setEditSynopsis}
+                  placeholder="Breve reseña o argumento..."
+                  placeholderTextColor={RospiereColors.outlineVariant}
+                  style={[styles.textInput, styles.textArea]}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+
+              {/* Modal Action Buttons */}
+              <View style={styles.modalActionsRow}>
+                <Pressable
+                  style={styles.modalCancelBtn}
+                  onPress={() => setEditModalVisible(false)}>
+                  <Text style={styles.modalCancelText}>CANCELAR</Text>
+                </Pressable>
+
+                <Pressable style={styles.modalSaveBtn} onPress={handleSaveEdit}>
+                  <MaterialIcons name="check" size={16} color={RospiereColors.onPrimary} />
+                  <Text style={styles.modalSaveText}>GUARDAR CAMBIOS</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ======================================================== */}
+      {/* DELETE CONFIRMATION MODAL                                */}
+      {/* ======================================================== */}
+      <Modal
+        visible={deleteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeleteModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setDeleteModalVisible(false)}>
+          <Pressable style={styles.deleteModalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.deleteIconBadge}>
+              <MaterialIcons name="delete-forever" size={32} color={RospiereColors.error} />
+            </View>
+
+            <Text style={styles.deleteTitle}>¿Eliminar de tu Estantería?</Text>
+            <Text style={styles.deleteDesc}>
+              ¿Confirmas que deseas eliminar permanentemente{' '}
+              <Text style={{ fontWeight: '700', color: RospiereColors.onSurface }}>
+                «{book.title}»
+              </Text>{' '}
+              de tu biblioteca? Se borrará el progreso de lectura y los marcadores guardados.
+            </Text>
+
+            <View style={styles.deleteActionsRow}>
+              <Pressable
+                style={styles.deleteCancelBtn}
+                onPress={() => setDeleteModalVisible(false)}>
+                <Text style={styles.deleteCancelText}>CANCELAR</Text>
+              </Pressable>
+
+              <Pressable
+                style={styles.deleteConfirmBtn}
+                onPress={handleConfirmDelete}>
+                <MaterialIcons name="delete" size={16} color="#FFFFFF" />
+                <Text style={styles.deleteConfirmText}>SÍ, ELIMINAR</Text>
+              </Pressable>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -1006,5 +1356,326 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: RospiereColors.onSurfaceVariant,
     lineHeight: 16,
+  },
+
+  // Top header actions
+  topHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  topIconBtn: {
+    padding: 6,
+  },
+
+  // Toast
+  toastCard: {
+    position: 'absolute',
+    top: 60,
+    alignSelf: 'center',
+    zIndex: 9999,
+    backgroundColor: RospiereColors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  toastText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 10.5,
+    letterSpacing: 0.8,
+    color: RospiereColors.onPrimary,
+    fontWeight: '600',
+  },
+
+  // Not Found State
+  notFoundContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+    gap: 12,
+  },
+  notFoundTitle: {
+    fontFamily: RospiereFonts.headline,
+    fontSize: 20,
+    color: RospiereColors.onSurface,
+  },
+  notFoundDesc: {
+    fontFamily: RospiereFonts.body,
+    fontSize: 12,
+    color: RospiereColors.secondary,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  backCatalogBtn: {
+    backgroundColor: RospiereColors.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  backCatalogBtnText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    color: RospiereColors.onPrimary,
+    fontWeight: '700',
+  },
+
+  // Secondary Quick Actions
+  bookSecondaryActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  bookSecondaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    backgroundColor: RospiereColors.surfaceContainerLow,
+    borderWidth: 1,
+    borderColor: RospiereColors.surfaceContainerHighest,
+  },
+  bookSecondaryText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8.5,
+    letterSpacing: 1,
+    color: RospiereColors.onSurface,
+    fontWeight: '600',
+  },
+  bookDeleteBtn: {
+    flex: 0,
+    paddingHorizontal: 12,
+    borderColor: 'rgba(186, 26, 26, 0.2)',
+  },
+  bookDeleteText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8.5,
+    letterSpacing: 1,
+    color: RospiereColors.error,
+    fontWeight: '700',
+  },
+
+  // Edit Modal Styles
+  editModalContent: {
+    width: '100%',
+    maxWidth: 520,
+    maxHeight: '88%',
+    backgroundColor: RospiereColors.surface,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  editModalTitle: {
+    fontFamily: RospiereFonts.headline,
+    fontSize: 22,
+    color: RospiereColors.onSurface,
+    marginTop: 2,
+  },
+  modalCloseIconBtn: {
+    padding: 4,
+  },
+  coverEditSection: {
+    flexDirection: 'row',
+    gap: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  coverPreviewCard: {
+    width: 85,
+    aspectRatio: 2 / 3,
+    backgroundColor: RospiereColors.surfaceContainerLow,
+    borderWidth: 1,
+    borderColor: RospiereColors.surfaceContainerHighest,
+    overflow: 'hidden',
+  },
+  coverPreviewImg: {
+    width: '100%',
+    height: '100%',
+  },
+  coverPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 4,
+  },
+  coverPlaceholderText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 8,
+    color: RospiereColors.secondary,
+  },
+  coverActionsCol: {
+    flex: 1,
+    gap: 5,
+  },
+  coverHint: {
+    fontFamily: RospiereFonts.body,
+    fontSize: 10,
+    color: RospiereColors.secondary,
+    lineHeight: 14,
+  },
+  uploadCoverBtn: {
+    backgroundColor: RospiereColors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 4,
+  },
+  uploadCoverBtnText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9,
+    letterSpacing: 1.2,
+    color: RospiereColors.onPrimary,
+    fontWeight: '600',
+  },
+
+  inputGroup: {
+    marginBottom: 12,
+  },
+  fieldLabel: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9,
+    letterSpacing: 1.4,
+    color: RospiereColors.secondary,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  textInput: {
+    backgroundColor: RospiereColors.surfaceContainerLow,
+    borderWidth: 1,
+    borderColor: RospiereColors.outlineVariant,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontFamily: RospiereFonts.body,
+    fontSize: 12,
+    color: RospiereColors.onSurface,
+  },
+  textArea: {
+    height: 75,
+    lineHeight: 17,
+  },
+  modalActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginTop: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: RospiereColors.outlineVariant,
+  },
+  modalCancelBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    backgroundColor: RospiereColors.surfaceContainerLow,
+  },
+  modalCancelText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9.5,
+    letterSpacing: 1.2,
+    color: RospiereColors.secondary,
+    fontWeight: '600',
+  },
+  modalSaveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    backgroundColor: RospiereColors.primary,
+  },
+  modalSaveText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9.5,
+    letterSpacing: 1.2,
+    color: RospiereColors.onPrimary,
+    fontWeight: '700',
+  },
+
+  // Delete modal
+  deleteModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: RospiereColors.surface,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  deleteIconBadge: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(186, 26, 26, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  deleteTitle: {
+    fontFamily: RospiereFonts.headline,
+    fontSize: 18,
+    color: RospiereColors.onSurface,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  deleteDesc: {
+    fontFamily: RospiereFonts.body,
+    fontSize: 11.5,
+    lineHeight: 17,
+    color: RospiereColors.secondary,
+    textAlign: 'center',
+    marginBottom: 18,
+  },
+  deleteActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  deleteCancelBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: RospiereColors.surfaceContainerLow,
+  },
+  deleteCancelText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9.5,
+    letterSpacing: 1.2,
+    color: RospiereColors.secondary,
+    fontWeight: '600',
+  },
+  deleteConfirmBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    backgroundColor: RospiereColors.error,
+  },
+  deleteConfirmText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 9.5,
+    letterSpacing: 1.2,
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
 });

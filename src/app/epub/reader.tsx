@@ -98,6 +98,7 @@ export default function EpubReaderScreen() {
     setAiApiKey,
     aiProvider,
     setAiProvider,
+    generateQuizWithAI,
   } = useRospiere();
 
   // Retrieve book data
@@ -149,6 +150,9 @@ export default function EpubReaderScreen() {
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [aiKeyModalVisible, setAiKeyModalVisible] = useState(false);
   const [aiKeyInput, setAiKeyInput] = useState('');
+
+  // Chapter AI Quiz Generation State
+  const [isGeneratingChapterQuiz, setIsGeneratingChapterQuiz] = useState(false);
 
   // Bookmarks Modal State
   const [bookmarksModalVisible, setBookmarksModalVisible] = useState(false);
@@ -218,6 +222,25 @@ export default function EpubReaderScreen() {
     100,
     Math.round(((currentChapterIndex + 1) / totalChapters) * 100)
   );
+
+  // Handler to generate an AI quiz for this chapter or selected snippet
+  const handleStartChapterQuiz = async (passageSnippet?: string) => {
+    setIsGeneratingChapterQuiz(true);
+    setSelectionMenuVisible(false);
+    try {
+      const currentChapterTitle = bookChapters[currentChapterIndex]?.title || `Capítulo ${currentChapterIndex + 1}`;
+      const topic = passageSnippet
+        ? `${currentChapterTitle} («${passageSnippet.slice(0, 75)}...»)`
+        : currentChapterTitle;
+      const quiz = await generateQuizWithAI(bookMeta.title, bookMeta.author, topic);
+      setIsGeneratingChapterQuiz(false);
+      router.push(`/quiz/${quiz.id}` as any);
+    } catch {
+      setIsGeneratingChapterQuiz(false);
+      setToastMessage('No se pudo generar el cuestionario con IA.');
+      setTimeout(() => setToastMessage(null), 2500);
+    }
+  };
 
   const handleToggleSettings = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -1513,6 +1536,33 @@ export default function EpubReaderScreen() {
               Fin de la escena • 7 minutos restantes de lectura
             </Text>
           </View>
+
+          {/* Cuestionario IA de este canto / capítulo */}
+          <Pressable
+            style={({ pressed }) => [
+              styles.chapterQuizBannerBtn,
+              { backgroundColor: activePalette.cardBg, borderColor: activePalette.border },
+              pressed && styles.pressed,
+            ]}
+            onPress={() => handleStartChapterQuiz()}
+            disabled={isGeneratingChapterQuiz}>
+            {isGeneratingChapterQuiz ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <ActivityIndicator size="small" color={activePalette.accent} />
+                <Text style={[styles.chapterQuizBannerBtnText, { color: activePalette.accent }]}>
+                  GENERANDO EVALUACIÓN CON IA...
+                </Text>
+              </View>
+            ) : (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <MaterialIcons name="auto-awesome" size={16} color={activePalette.accent} />
+                <Text style={[styles.chapterQuizBannerBtnText, { color: activePalette.accent }]}>
+                  EVALUACIÓN IA DEL CANTO
+                </Text>
+                <MaterialIcons name="arrow-forward" size={14} color={activePalette.accent} />
+              </View>
+            )}
+          </Pressable>
         </View>
       </ScrollView>
 
@@ -1753,6 +1803,20 @@ export default function EpubReaderScreen() {
               <MaterialIcons name="psychology" size={16} color={activePalette.bg} />
               <Text style={[styles.selectionBtnText, { color: activePalette.bg }]}>
                 CONSULTAR IA
+              </Text>
+            </Pressable>
+
+            {/* 4. Quiz IA del pasaje */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.selectionBtn,
+                { backgroundColor: activePalette.bg },
+                pressed && styles.pressed,
+              ]}
+              onPress={() => handleStartChapterQuiz(selectedSnippet || undefined)}>
+              <MaterialIcons name="quiz" size={16} color={activePalette.accent} />
+              <Text style={[styles.selectionBtnText, { color: activePalette.accent }]}>
+                QUIZ IA
               </Text>
             </Pressable>
           </View>
@@ -2988,5 +3052,26 @@ const styles = StyleSheet.create({
     fontFamily: RospiereFonts.body,
     fontSize: 12,
     backgroundColor: '#FAFAFA',
+  },
+  chapterQuizBannerBtn: {
+    marginTop: 20,
+    marginHorizontal: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  chapterQuizBannerBtnText: {
+    fontFamily: RospiereFonts.label,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
 });

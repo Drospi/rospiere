@@ -1,4 +1,4 @@
-import { Book, Quiz, ChatMessage, UserStats, Medal, CuratedList } from '@/types/rospiere';
+import { Book, Quiz, ChatMessage, UserStats, Medal, CuratedList, ChallengeItem } from '@/types/rospiere';
 
 export const INITIAL_BOOKS: Book[] = [
   {
@@ -588,3 +588,71 @@ export const CURATED_LISTS: CuratedList[] = [
     bookIds: ['klara-y-el-sol', '1984'],
   },
 ];
+
+export const INITIAL_CHALLENGES: ChallengeItem[] = [
+  {
+    id: 'reto-odisea-1',
+    bookId: 'odisea-homero',
+    bookTitle: 'La Odisea',
+    bookAuthor: 'Homero',
+    title: 'Maratón Homérico: 5 Cantos',
+    description: 'Avanza y reflexiona sobre los primeros cinco cantos de la épica jónica y el periplo de Telémaco.',
+    type: 'chapters',
+    targetCount: 5,
+    currentCount: 2,
+    daysRemaining: 4,
+    xpReward: 250,
+    medalName: 'Aedo de Ítaca',
+    status: 'active',
+    createdAt: '20 Octubre, 2024',
+  },
+  {
+    id: 'reto-macondo-1',
+    bookId: 'cien-anos-de-soledad',
+    bookTitle: 'Cien años de soledad',
+    bookAuthor: 'Gabriel García Márquez',
+    title: 'Inmersión Macondiana Completa',
+    description: 'Culmina la lectura de la saga de los Buendía y aprueba el cuestionario con más del 90%.',
+    type: 'quiz_score',
+    targetCount: 1,
+    currentCount: 1,
+    daysRemaining: 1,
+    xpReward: 300,
+    medalName: 'Cronista de Macondo',
+    status: 'completed',
+    createdAt: '15 Octubre, 2024',
+  },
+  {
+    id: 'reto-klara-1',
+    bookId: 'klara-y-el-sol',
+    bookTitle: 'Klara y el Sol',
+    bookAuthor: 'Kazuo Ishiguro',
+    title: 'Análisis de la Luz Solar y Gracia',
+    description: 'Lectura de 3 capítulos reflexivos anotando pasajes y contrastes éticos sobre la inocencia artificial.',
+    type: 'chapters',
+    targetCount: 3,
+    currentCount: 1,
+    daysRemaining: 6,
+    xpReward: 180,
+    medalName: 'Gracia Solar',
+    status: 'active',
+    createdAt: '18 Octubre, 2024',
+  },
+  {
+    id: 'reto-racha-7',
+    bookId: 'la-tregua',
+    bookTitle: 'La tregua',
+    bookAuthor: 'Mario Benedetti',
+    title: 'Hábito Literario: 7 Días Seguidos',
+    description: 'Mantén una racha de lectura diaria ininterrumpida de al menos 15 minutos en tu biblioteca.',
+    type: 'daily_streak',
+    targetCount: 7,
+    currentCount: 5,
+    daysRemaining: 2,
+    xpReward: 200,
+    medalName: 'Lector Constante',
+    status: 'active',
+    createdAt: '14 Octubre, 2024',
+  },
+];
+

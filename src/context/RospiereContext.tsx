@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import {
   Book,
   Quiz,
@@ -13,6 +13,7 @@ import {
   EpubThemeMode,
   EpubAlign,
   EpubBookmarkItem,
+  ChallengeItem,
 } from '@/types/rospiere';
 import {
   INITIAL_BOOKS,
@@ -20,6 +21,7 @@ import {
   INITIAL_CHAT_MESSAGES,
   INITIAL_USER_STATS,
   INITIAL_MEDALS,
+  INITIAL_CHALLENGES,
 } from '@/data/rospiereData';
 import { ParsedEpub } from '@/utils/epubParser';
 
@@ -121,6 +123,19 @@ interface RospiereContextType {
   addEpubBookmark: (item: Omit<EpubBookmarkItem, 'id' | 'date'>) => void;
   removeEpubBookmark: (id: string) => void;
 
+  // Book Management (Edit & Delete)
+  deleteBook: (bookId: string) => void;
+  updateBook: (bookId: string, updates: Partial<Book>) => void;
+
+  // Challenges / Retos
+  challenges: ChallengeItem[];
+  addChallenge: (challenge: Omit<ChallengeItem, 'id' | 'createdAt' | 'currentCount' | 'status'>) => void;
+  updateChallengeProgress: (challengeId: string, increment?: number) => void;
+
+  // AI Quiz Generation
+  addQuiz: (quiz: Quiz) => void;
+  generateQuizWithAI: (bookTitle: string, bookAuthor: string, topicOrChapter?: string) => Promise<Quiz>;
+
   // AI Configuration for Literary Assistant
   aiApiKey: string;
   setAiApiKey: (key: string) => void;
@@ -133,6 +148,7 @@ const RospiereContext = createContext<RospiereContextType | undefined>(undefined
 export function RospiereProvider({ children }: { children: ReactNode }) {
   const [books, setBooks] = useState<Book[]>(INITIAL_BOOKS);
   const [quizzes, setQuizzes] = useState<Quiz[]>(INITIAL_QUIZZES);
+  const [challenges, setChallenges] = useState<ChallengeItem[]>(INITIAL_CHALLENGES);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(INITIAL_CHAT_MESSAGES);
   const [userStats, setUserStats] = useState<UserStats>(INITIAL_USER_STATS);
   const [medals] = useState<Medal[]>(INITIAL_MEDALS);
@@ -162,9 +178,42 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
     fontSize: 18,
     theme: 'paper',
   });
+  const [aiApiKey, setAiApiKey] = useState<string>('');
+  const [aiProvider, setAiProvider] = useState<'gemini' | 'openai' | 'local'>('local');
 
   const getBook = (id: string) => books.find((b) => b.id === id);
   const getQuiz = (id: string) => quizzes.find((q) => q.id === id);
+
+  const deleteBook = (bookId: string) => {
+    setBooks((prev) => prev.filter((b) => b.id !== bookId));
+    setImportedEpubBooks((prev) => prev.filter((b) => b.id !== bookId));
+    setCustomEpubDataMap((prev) => {
+      const copy = { ...prev };
+      delete copy[bookId];
+      return copy;
+    });
+    setEpubBookmarks((prev) => prev.filter((bm) => bm.bookId !== bookId));
+  };
+
+  const updateBook = (bookId: string, updates: Partial<Book>) => {
+    setBooks((prev) =>
+      prev.map((b) => (b.id === bookId ? { ...b, ...updates } : b))
+    );
+    setImportedEpubBooks((prev) =>
+      prev.map((b) => {
+        if (b.id === bookId) {
+          return {
+            ...b,
+            title: updates.title !== undefined ? updates.title : b.title,
+            author: updates.author !== undefined ? updates.author : b.author,
+            coverImage: updates.coverImage !== undefined ? updates.coverImage : b.coverImage,
+            description: updates.synopsis !== undefined ? updates.synopsis : b.description,
+          };
+        }
+        return b;
+      })
+    );
+  };
 
   const toggleBookmark = (id: string) => {
     setBooks((prev) =>
@@ -234,6 +283,275 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
       }));
     }
   };
+
+  const addChallenge = (
+    item: Omit<ChallengeItem, 'id' | 'createdAt' | 'currentCount' | 'status'>
+  ) => {
+    const newChallenge: ChallengeItem = {
+      ...item,
+      id: `challenge-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      currentCount: 0,
+      status: 'active',
+      createdAt: new Date().toLocaleDateString('es-ES', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      }),
+    };
+    setChallenges((prev) => [newChallenge, ...prev]);
+  };
+
+  const updateChallengeProgress = (challengeId: string, increment: number = 1) => {
+    setChallenges((prev) =>
+      prev.map((c) => {
+        if (c.id === challengeId) {
+          const newCount = Math.min(c.targetCount, c.currentCount + increment);
+          const isCompleted = newCount >= c.targetCount;
+          return {
+            ...c,
+            currentCount: newCount,
+            status: isCompleted ? 'completed' : 'active',
+          };
+        }
+        return c;
+      })
+    );
+  };
+
+  const addQuiz = (quiz: Quiz) => {
+    setQuizzes((prev) => [quiz, ...prev]);
+  };
+
+  const generateQuizWithAI = useCallback(
+    async (
+      bookTitle: string,
+      bookAuthor: string,
+      topicOrChapter?: string
+    ): Promise<Quiz> => {
+      const quizId = `quiz-ai-${Date.now()}`;
+    const cleanTopic = topicOrChapter || 'Temas Fundamentales & Análisis Socrático';
+
+    // Try AI generation if API key exists
+    if (aiApiKey && aiApiKey.trim().length > 10) {
+      try {
+        const promptText = `Genera un cuestionario socrático de comprensión literaria de 3 preguntas de opción múltiple para el libro "${bookTitle}" de ${bookAuthor}. Tema o sección: ${cleanTopic}. Responde exclusivamente con un JSON válido sin texto adicional, con este formato exacto:
+{
+  "title": "Cuestionario Crítico: ${bookTitle}",
+  "description": "Evaluación analítica sobre ${cleanTopic}.",
+  "questions": [
+    {
+      "prompt": "¿...?",
+      "options": ["A", "B", "C"],
+      "correctIndex": 0,
+      "explanation": "..."
+    }
+  ]
+}`;
+
+        let rawJson = '';
+        if (aiProvider === 'openai') {
+          const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${aiApiKey.trim()}`,
+            },
+            body: JSON.stringify({
+              model: 'gpt-4o-mini',
+              messages: [{ role: 'user', content: promptText }],
+              response_format: { type: 'json_object' },
+              max_tokens: 600,
+            }),
+          });
+          const json = await res.json();
+          rawJson = json.choices?.[0]?.message?.content || '';
+        } else {
+          // Gemini
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${aiApiKey.trim()}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: promptText }] }],
+              }),
+            }
+          );
+          const json = await res.json();
+          rawJson = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        }
+
+        if (rawJson) {
+          const cleanJsonStr = rawJson.replace(/```json|```/g, '').trim();
+          const parsed = JSON.parse(cleanJsonStr);
+          if (parsed && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+            const aiQuiz: Quiz = {
+              id: quizId,
+              bookId: bookTitle.toLowerCase().replace(/\s+/g, '-'),
+              bookTitle,
+              bookAuthor,
+              title: parsed.title || `Cuestionario Crítico: ${bookTitle}`,
+              description: parsed.description || `Evaluación generada con IA para ${bookTitle}.`,
+              coverImage:
+                'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80',
+              level: 'Nivel Intermedio',
+              tag: 'Generado IA',
+              questionCount: parsed.questions.length,
+              estimatedTime: '4 min',
+              completedQuestions: 0,
+              totalQuestions: parsed.questions.length,
+              category: 'deep',
+              hasGoldMedal: true,
+              questions: parsed.questions.map((q: any, idx: number) => ({
+                id: `q-${idx + 1}`,
+                prompt: q.prompt,
+                options: q.options || ['Verdadero', 'Falso'],
+                correctIndex: typeof q.correctIndex === 'number' ? q.correctIndex : 0,
+                explanation: q.explanation || 'Análisis socrático del acierto.',
+              })),
+            };
+            setQuizzes((prev) => [aiQuiz, ...prev]);
+            return aiQuiz;
+          }
+        }
+      } catch {
+        // Fallback to local
+      }
+    }
+
+    // Local / Offline Rospiere Socratic Generator
+    const lower = bookTitle.toLowerCase();
+    let sampleQuestions = [];
+
+    if (lower.includes('odisea') || lower.includes('homero')) {
+      sampleQuestions = [
+        {
+          id: 'q1',
+          prompt: '¿Qué concepto homérico encarna la virtud primordial de Odiseo frente a la fuerza destructiva?',
+          options: ['La «Mêtis» (astucia adaptable y prudencia)', 'El «Kléos» (gloria marcial impulsiva)', 'El azar de los vientos'],
+          correctIndex: 0,
+          explanation: 'La mêtis representa la inteligencia paciente y versátil que permite a Odiseo triunfar ante monstruos y tempestades.',
+        },
+        {
+          id: 'q2',
+          prompt: '¿Por qué la transgresión de la «Xenía» por parte de los pretendientes sella su destino inexorable?',
+          options: [
+            'Porque violan un tratado bélico previo',
+            'Porque ofenden a Zeus Xenios, custodio del deber sagrado hacia el huésped',
+            'Porque no pagaron tributo a los sacerdotes de Apolo',
+          ],
+          correctIndex: 1,
+          explanation: 'En el canon clásico, la hospitalidad era una ley sagrada tutelada directamente por Zeus.',
+        },
+        {
+          id: 'q3',
+          prompt: '¿Qué significado simbólico posee el viaje de Telémaco a Pilos y Esparta en la Telemaquia?',
+          options: [
+            'Una expedición militar de conquista',
+            'Un rito de iniciación hacia la madurez para reivindicar el linaje paterno',
+            'Un escape pacífico ante el acoso de Ítaca',
+          ],
+          correctIndex: 1,
+          explanation: 'La Telemaquia estructura la metamorfosis del joven príncipe en un líder digno de su estirpe.',
+        },
+      ];
+    } else if (lower.includes('soledad') || lower.includes('marquez') || lower.includes('macondo')) {
+      sampleQuestions = [
+        {
+          id: 'q1',
+          prompt: '¿Cuál es el estigma ontológico que condena a las sucesivas generaciones de los Buendía?',
+          options: [
+            'La precariedad material de la selva',
+            'La incapacidad de amar y la repetición cíclica del aislamiento',
+            'La falta de educación formal',
+          ],
+          correctIndex: 1,
+          explanation: 'García Márquez presenta la soledad como una incapacidad íntima de amar que replica sus propios espejismos.',
+        },
+        {
+          id: 'q2',
+          prompt: '¿Qué función desempeñan los pergaminos de Melquíades en la estructura de la novela?',
+          options: [
+            'Son actas notariales de propiedad de la tierra',
+            'Registran el destino circular de la familia cifrado en sánscrito',
+            'Son cánticos de alabanza a las expediciones de los gitanos',
+          ],
+          correctIndex: 1,
+          explanation: 'Los pergaminos codifican el tiempo sincrónico de Macondo donde pasado, presente y futuro coinciden.',
+        },
+        {
+          id: 'q3',
+          prompt: '¿Qué acontecimiento simboliza la pérdida definitiva de la inocencia fundacional de Macondo?',
+          options: [
+            'La masacre de las bananeras y la amnesia histórica impuesta',
+            'La llegada de los primeros imanes y la lupa gigante',
+            'La construcción de la casa señorial con pianola',
+          ],
+          correctIndex: 0,
+          explanation: 'La masacre introduce la violencia institucional y la tergiversación de la memoria colectiva.',
+        },
+      ];
+    } else {
+      sampleQuestions = [
+        {
+          id: 'q1',
+          prompt: `¿Cuál es el núcleo dramático y moral que vertebra el desarrollo de «${bookTitle}»?`,
+          options: [
+            'La tensión entre la autenticidad del individuo y las demandas o fatalidad del entorno',
+            'Un enredo anecdótico sin implicaciones psicológicas',
+            'Una sucesión de eventos inconexos sin dilema ético',
+          ],
+          correctIndex: 0,
+          explanation: 'La obra indaga en la fricción entre la identidad íntima y las imposiciones del mundo exterior.',
+        },
+        {
+          id: 'q2',
+          prompt: '¿Cómo modula el autor el tono y la voz narrativa a lo largo del texto?',
+          options: [
+            'A través de una aguda sensibilidad que resalta los contrastes emocionales de los personajes',
+            'Mediante un registro neutro desprovisto de resonancia estética',
+            'Con humor farsesco ajeno a la gravedad del argumento',
+          ],
+          correctIndex: 0,
+          explanation: 'Las decisiones estilísticas profundizan la atmósfera sensible y el subtexto poético de la obra.',
+        },
+        {
+          id: 'q3',
+          prompt: '¿Qué interrogante filosófico o existencial plantea el cierre del texto?',
+          options: [
+            'La necesidad de confrontar la propia verdad antes de que el tiempo disuelva las certezas',
+            'La irrelevancia absoluta de las decisiones morales',
+            'La certeza de que ningún acto humano genera consecuencias',
+          ],
+          correctIndex: 0,
+          explanation: 'El desenlace confronta al lector con el valor de la memoria y la lucidez frente al devenir vital.',
+        },
+      ];
+    }
+
+    const localQuiz: Quiz = {
+      id: quizId,
+      bookId: bookTitle.toLowerCase().replace(/\s+/g, '-'),
+      bookTitle,
+      bookAuthor,
+      title: `Cuestionario Crítico: ${bookTitle}`,
+      description: `Evaluación socrática de 3 preguntas analíticas sobre ${cleanTopic}.`,
+      coverImage:
+        'https://images.unsplash.com/photo-1457369804613-52c61a468e7d?auto=format&fit=crop&w=600&q=80',
+      level: 'Nivel Intermedio',
+      tag: 'Generado IA Local',
+      questionCount: sampleQuestions.length,
+      estimatedTime: '3 min',
+      completedQuestions: 0,
+      totalQuestions: sampleQuestions.length,
+      category: 'deep',
+      hasGoldMedal: true,
+      questions: sampleQuestions,
+    };
+
+    setQuizzes((prev) => [localQuiz, ...prev]);
+    return localQuiz;
+  }, [aiApiKey, aiProvider]);
 
   const sendMessage = (text: string) => {
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -351,8 +669,6 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
       color: '#E0D0B8',
     },
   ]);
-  const [aiApiKey, setAiApiKey] = useState<string>('');
-  const [aiProvider, setAiProvider] = useState<'gemini' | 'openai' | 'local'>('local');
 
   const addEpubBookmark = (item: Omit<EpubBookmarkItem, 'id' | 'date'>) => {
     const newBookmark: EpubBookmarkItem = {
@@ -530,6 +846,19 @@ export function RospiereProvider({ children }: { children: ReactNode }) {
         toggleEpubBookmark,
         getCustomEpubData,
         
+        // Book Management (Edit & Delete)
+        deleteBook,
+        updateBook,
+
+        // Challenges / Retos
+        challenges,
+        addChallenge,
+        updateChallengeProgress,
+
+        // AI Quiz Generation
+        addQuiz,
+        generateQuizWithAI,
+
         // Bookmarks & AI
         epubBookmarks,
         addEpubBookmark,

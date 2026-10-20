@@ -97,6 +97,23 @@ export interface Medal {
   unlocked: boolean;
 }
 
+export interface ChallengeItem {
+  id: string;
+  bookId: string;
+  bookTitle: string;
+  bookAuthor: string;
+  title: string;
+  description: string;
+  type: 'chapters' | 'quiz_score' | 'daily_streak' | 'essay';
+  targetCount: number;
+  currentCount: number;
+  daysRemaining: number;
+  xpReward: number;
+  medalName?: string;
+  status: 'active' | 'completed';
+  createdAt: string;
+}
+
 export interface CuratedList {
   id: string;
   title: string;
